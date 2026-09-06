@@ -158,8 +158,12 @@ export const payablesService = {
     }
   },
 
-  async getFilters(): Promise<PayablesFiltersApi> {
-    const res = await client.get('/finance/payables/filters')
+  async getFilters(params?: { paymentStatus?: string }): Promise<PayablesFiltersApi> {
+    const res = await client.get('/finance/payables/filters', {
+      params: {
+        ...(params?.paymentStatus ? { paymentStatus: params.paymentStatus } : {}),
+      },
+    })
     return unwrapApiData<PayablesFiltersApi>(res.data) ?? {}
   },
 }

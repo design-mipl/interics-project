@@ -14,10 +14,15 @@ import { Plus, Trash2 } from 'lucide-react'
 import { Badge, Button, Input, Select } from '@/design-system/components'
 import type { LineItem, LineSource } from '@/slices/receivables/reducer'
 import type { Service, SACCode } from '@/slices/settings/reducer'
+import type { Baseline } from '@/slices/baseline/reducer'
 import { tokens } from '@/design-system/tokens'
 import { formatInr } from '@/utils/formatters'
 import { computeLineItemTaxBreakdown } from '@/pages/Projects/tabs/live/clientInvoiceUtils'
 import { DEFAULT_GST_RATE } from '@/config/billingRates'
+import {
+  resolveServiceForLine,
+  sacCodeForService,
+} from '@/pages/Finance/utils/projectBillable'
 
 export interface DraftLineItem {
   id: string
@@ -57,8 +62,34 @@ function applyLineTaxes(line: DraftLineItem): DraftLineItem {
 }
 
 function resolveSac(sacCodes: SACCode[], service: Service | undefined): string {
-  if (!service?.sacCodeId) return '—'
-  return sacCodes.find((s) => s.id === service.sacCodeId)?.code ?? '—'
+  const code = sacCodeForService(sacCodes, service)
+  return code || '—'
+}
+
+/** Prefer stored SAC; otherwise resolve from settings service / baseline service. */
+function displaySacCode(
+  row: LineItem | DraftLineItem,
+  services: Service[],
+  sacCodes: SACCode[],
+  baseline?: Baseline | null,
+): string {
+  const stored = row.sacCode?.trim()
+  if (stored && stored !== '—') return stored
+
+  const baselineServiceId =
+    'baselineServiceId' in row && typeof row.baselineServiceId === 'string'
+      ? row.baselineServiceId
+      : undefined
+
+  const serviceLabel = row.serviceName.includes(' — ')
+    ? row.serviceName.split(' — ').slice(-1)[0]?.trim()
+    : row.serviceName
+
+  const service =
+    resolveServiceForLine(row.serviceId, serviceLabel, services, baseline) ??
+    resolveServiceForLine(baselineServiceId, serviceLabel, services, baseline)
+
+  return resolveSac(sacCodes, service)
 }
 
 export interface InvoiceLineItemsProps {
@@ -66,6 +97,8 @@ export interface InvoiceLineItemsProps {
   lines: DraftLineItem[] | LineItem[]
   services: Service[]
   sacCodes: SACCode[]
+  /** Project baseline — used to map pitch service ids → Service Master for SAC. */
+  baseline?: Baseline | null
   onChange?: (lines: DraftLineItem[]) => void
   error?: string
   /** When set, renders a read-only TDS % column next to GST %. */
@@ -109,6 +142,7 @@ export function InvoiceLineItems({
   lines,
   services,
   sacCodes,
+  baseline = null,
   onChange,
   error,
   projectSourced = false,
@@ -132,7 +166,7 @@ export function InvoiceLineItems({
       const svc = activeServices.find((s) => s.id === patch.serviceId)
       cur.serviceName = svc?.name ?? ''
       cur.gstRate = svc?.gstRate ?? DEFAULT_GST_RATE
-      cur.sacCode = resolveSac(sacCodes, svc)
+      cur.sacCode = sacCodeForService(sacCodes, svc)
     }
     if (
       patch.amount !== undefined ||
@@ -262,7 +296,9 @@ export function InvoiceLineItems({
                 <TableRow key={row.id}>
                   <TableCell sx={{ fontSize: 12, ...serviceColSx }}>{row.serviceName}</TableCell>
                   {!hideSacColumn ? (
-                    <TableCell sx={{ fontSize: 12, fontFamily: 'monospace' }}>{row.sacCode}</TableCell>
+                    <TableCell sx={{ fontSize: 12, fontFamily: 'monospace' }}>
+                      {displaySacCode(row, services, sacCodes, baseline)}
+                    </TableCell>
                   ) : null}
                   <TableCell sx={{ fontSize: 12, ...amountColSx }}>₹{formatInr(row.amount)}</TableCell>
                   {showLabourCessColumn ? (
@@ -311,7 +347,7 @@ export function InvoiceLineItems({
                   </TableCell>
                   {!hideSacColumn ? (
                     <TableCell sx={{ fontSize: 12, fontFamily: 'monospace', verticalAlign: 'middle' }}>
-                      {draft.sacCode || '—'}
+                      {displaySacCode(draft, services, sacCodes, baseline)}
                     </TableCell>
                   ) : null}
                   <TableCell sx={{ py: 1.5, verticalAlign: 'top', ...amountColSx }}>

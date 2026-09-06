@@ -468,6 +468,21 @@ export function invoiceUploadedLabel(inv: VendorInvoice | undefined): 'Uploaded'
   return inv ? 'Uploaded' : 'Pending'
 }
 
+/** Prefer explicit invoice date; fall back to upload timestamp for display. */
+export function resolveVendorInvoiceDisplayDate(
+  invoice?: Pick<VendorInvoice, 'invoiceDate' | 'uploadedAt'> | null,
+  fallbackDate?: string | null,
+): string {
+  for (const value of [invoice?.invoiceDate, invoice?.uploadedAt, fallbackDate]) {
+    if (typeof value !== 'string' || !value.trim()) continue
+    const trimmed = value.trim()
+    const day = trimmed.slice(0, 10)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(day)) return day
+    return trimmed
+  }
+  return ''
+}
+
 export function vendorInvoiceDocumentFileName(inv: VendorInvoice): string | null {
   if (inv.fileName?.trim()) return inv.fileName.trim()
   if (!inv.documentUrl) return null

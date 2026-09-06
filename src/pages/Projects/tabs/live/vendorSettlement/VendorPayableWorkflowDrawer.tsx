@@ -48,6 +48,7 @@ import {
   invoiceMatchesRow,
   payableStatusBadgeColor,
   payableStatusLabel,
+  resolveVendorInvoiceDisplayDate,
   TDS_RATE_OPTIONS,
   vendorInvoiceDocumentFileName,
   vendorInvoiceDocumentOpenUrl,
@@ -82,6 +83,8 @@ export interface VendorPayableWorkflowDrawerProps {
   invoiceId?: string
   /** Payment status from the payables row so View matches the listing. */
   paymentStatus?: PayablePaymentStatus
+  /** Invoice date from the payables list when the stored invoice date is blank. */
+  invoiceDate?: string
   onUploadInvoice?: (milestoneId: string) => void
   /** project_live = pay specific milestone row; finance = invoice-level proportional allocation */
   paymentEntryMode?: 'project_live' | 'finance'
@@ -109,6 +112,7 @@ export function VendorPayableWorkflowDrawer({
   readOnly = false,
   invoiceId,
   paymentStatus: listPaymentStatus,
+  invoiceDate: listInvoiceDate,
   onUploadInvoice,
   paymentEntryMode = 'project_live',
 }: VendorPayableWorkflowDrawerProps) {
@@ -525,7 +529,12 @@ export function VendorPayableWorkflowDrawer({
           {milestoneInvoice ? (
             <Stack spacing={1.25}>
               <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1.5 }}>
-                <ReadOnlyField label="Invoice date" value={formatDate(milestoneInvoice.invoiceDate)} />
+                <ReadOnlyField
+                  label="Invoice date"
+                  value={formatDate(
+                    resolveVendorInvoiceDisplayDate(milestoneInvoice, listInvoiceDate),
+                  )}
+                />
                 <ReadOnlyField
                   label="Invoice amount"
                   value={`₹${formatCurrency(invoiceNetPayable)}`}

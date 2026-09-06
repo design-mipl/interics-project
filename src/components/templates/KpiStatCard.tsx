@@ -1,4 +1,4 @@
-import { Box, Card, Stack, Typography } from '@mui/material'
+import { Box, Card, CircularProgress, Stack, Typography } from '@mui/material'
 import { useTheme } from '@mui/material/styles'
 import type { ReactNode } from 'react'
 
@@ -46,9 +46,17 @@ export interface KpiStatCardProps {
   value: string | number
   variant?: StatCardVariant
   icon?: ReactNode
+  /** Show a compact loader in place of the value while data is fetching. */
+  loading?: boolean
 }
 
-export function KpiStatCard({ label, value, variant = 'default', icon }: KpiStatCardProps) {
+export function KpiStatCard({
+  label,
+  value,
+  variant = 'default',
+  icon,
+  loading = false,
+}: KpiStatCardProps) {
   const theme = useTheme()
   const mode = theme.palette.mode === 'dark' ? 'dark' : 'light'
   const { iconBg, iconColor } = getKpiVariantColors(variant, mode)
@@ -79,17 +87,23 @@ export function KpiStatCard({ label, value, variant = 'default', icon }: KpiStat
           >
             {label}
           </Typography>
-          <Typography
-            sx={{
-              fontSize: 22,
-              fontWeight: 600,
-              color: 'text.primary',
-              mt: 0.75,
-              lineHeight: 1.2,
-            }}
-          >
-            {value}
-          </Typography>
+          {loading ? (
+            <Box sx={{ mt: 0.75, minHeight: 26, display: 'flex', alignItems: 'center' }}>
+              <CircularProgress size={18} thickness={4} />
+            </Box>
+          ) : (
+            <Typography
+              sx={{
+                fontSize: 22,
+                fontWeight: 600,
+                color: 'text.primary',
+                mt: 0.75,
+                lineHeight: 1.2,
+              }}
+            >
+              {value}
+            </Typography>
+          )}
         </Box>
         {icon && (
           <Box

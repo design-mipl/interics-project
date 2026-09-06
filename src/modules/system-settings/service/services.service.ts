@@ -32,6 +32,7 @@ function toService(
     name: api.name,
     categoryId,
     sacCodeId,
+    sacCode: typeof api.sacCode === 'string' ? api.sacCode.trim() : '',
     gstRate: Number(api.gstRate),
     allowGSTOverride: false,
     allowVendorMapping: false,
@@ -100,6 +101,31 @@ export const servicesService = {
         meta,
       }
     })
+  },
+
+  /** Page through the list API (limit ≤ 100) until every service is loaded. */
+  async getAllPages(
+    categories: Category[],
+    sacCodes: SACCode[],
+    params: Omit<ServiceListParams, 'page' | 'limit'> = {},
+  ): Promise<ListResult<Service>> {
+    const pageLimit = 100
+    const items: Service[] = []
+    let page = 1
+    let total = Number.POSITIVE_INFINITY
+    while (items.length < total) {
+      const result = await servicesService.getAll(categories, sacCodes, {
+        ...params,
+        page,
+        limit: pageLimit,
+      })
+      items.push(...result.items)
+      total = result.meta.total ?? items.length
+      if (result.items.length === 0 || result.items.length < pageLimit) break
+      page += 1
+      if (page > 100) break
+    }
+    return { items, meta: { total: items.length } }
   },
 
   async getFilters(): Promise<ServiceFilters> {

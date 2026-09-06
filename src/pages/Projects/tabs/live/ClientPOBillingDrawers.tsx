@@ -168,7 +168,7 @@ function useClientPoTaxPreviewContext(
       return
     }
     void dispatch(fetchBaseline(projectId))
-    void dispatch(fetchServices({ limit: 1000, force: true }))
+    void dispatch(fetchServices({ force: true, all: true }))
     let cancelled = false
     void dropdownsApi
       .getServices()

@@ -86,6 +86,23 @@ export const sacCodesService = {
     })
   },
 
+  /** Page through the list API (limit ≤ 100) until every SAC row is loaded. */
+  async getAllPages(params: Omit<SacListParams, 'page' | 'limit'> = {}): Promise<ListResult<SACCode>> {
+    const pageLimit = 100
+    const items: SACCode[] = []
+    let page = 1
+    let total = Number.POSITIVE_INFINITY
+    while (items.length < total) {
+      const result = await sacCodesService.getAll({ ...params, page, limit: pageLimit })
+      items.push(...result.items)
+      total = result.meta.total ?? items.length
+      if (result.items.length === 0 || result.items.length < pageLimit) break
+      page += 1
+      if (page > 100) break
+    }
+    return { items, meta: { total: items.length } }
+  },
+
   async getFilters(): Promise<SacFilters> {
     const res = await client.get(`${BASE}/filters`)
     return unwrapApiData<SacFilters>(res.data)
