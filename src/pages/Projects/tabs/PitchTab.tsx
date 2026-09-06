@@ -63,7 +63,7 @@ import {
   updatePlannedExpenses,
 } from '../../../slices/pitch/thunk'
 import { selectPitchFinancials } from '../../../store/selectors/pitchSelectors'
-import { formatCurrency } from '../../../utils/formatters'
+import { formatInr } from '../../../utils/formatters'
 import type { Project } from '../../../slices/projects/reducer'
 import { registerVendorQuotationUpload } from '../projectDocumentUploads'
 import { pitchService } from '@/modules/projects/pitch.service'
@@ -952,7 +952,7 @@ export default function PitchTab({ project }: { project: Project }) {
                       <Stack direction="row" alignItems="center" gap={0.5} onClick={(e) => e.stopPropagation()}>
                         <MuiChip
                           size="small"
-                          label={`₹${formatCurrency(categoryTotal)} | ${serviceCount} service${serviceCount === 1 ? '' : 's'}`}
+                          label={`₹${formatInr(categoryTotal)} | ${serviceCount} service${serviceCount === 1 ? '' : 's'}`}
                           sx={{ fontSize: 10, height: 20 }}
                         />
                         <MuiIconButton
@@ -1111,6 +1111,11 @@ export default function PitchTab({ project }: { project: Project }) {
                 Add Category
               </MuiButton>
             </Box>
+            <Stack direction="row" justifyContent="flex-end" sx={{ mt: 2, pt: 1.5, borderTop: `1px solid ${tokens.color.neutral[100]}` }}>
+              <Typography variant="body2" sx={{ fontWeight: 600, fontSize: 13 }}>
+                Total Client Offer: ₹{formatInr(activeVersion?.totalRevenue ?? pitchFinMetrics.clientPOValue)}
+              </Typography>
+            </Stack>
           </Box>
 
           <Box sx={{ mt: 3, p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 2, bgcolor: 'background.paper' }}>
@@ -1194,7 +1199,7 @@ export default function PitchTab({ project }: { project: Project }) {
                         </TableCell>
                         <TableCell align="left">
                           <Typography variant="body2" sx={{ fontSize: 12, fontWeight: 600 }}>
-                            ₹{formatCurrency(row.mapping.value)}
+                            ₹{formatInr(row.mapping.value)}
                           </Typography>
                         </TableCell>
                         <TableCell align="left">
@@ -1305,6 +1310,11 @@ export default function PitchTab({ project }: { project: Project }) {
                 </TableBody>
               </Table>
             </Box>
+            <Stack direction="row" justifyContent="flex-end" sx={{ mt: 2, pt: 1.5, borderTop: `1px solid ${tokens.color.neutral[100]}` }}>
+              <Typography variant="body2" sx={{ fontWeight: 600, fontSize: 13 }}>
+                Total Vendor Offer: ₹{formatInr(pitchFinMetrics.vendorCosts)}
+              </Typography>
+            </Stack>
           </Box>
 
           <Box sx={{ mt: 3, p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 2, bgcolor: 'background.paper' }}>
@@ -1362,7 +1372,7 @@ export default function PitchTab({ project }: { project: Project }) {
                                     : 'Common'}
                           </TableCell>
                           <TableCell sx={{ fontSize: 12, ...TABLE_CELL_PAD }}>{row.name}</TableCell>
-                          <TableCell sx={{ fontSize: 12, ...TABLE_CELL_PAD }}>₹{formatCurrency(row.amount)}</TableCell>
+                          <TableCell sx={{ fontSize: 12, ...TABLE_CELL_PAD }}>₹{formatInr(row.amount)}</TableCell>
                           <TableCell sx={{ fontSize: 12, ...TABLE_CELL_PAD }}>
                             {(row.type === 'additional' || row.type === 'office_expenses') && '—'}
                             {(row.type === 'vendor' || row.type === 'reimbursable_expenses') &&
@@ -1405,7 +1415,7 @@ export default function PitchTab({ project }: { project: Project }) {
               </Box>
               <Stack direction="row" justifyContent="flex-end" sx={{ mt: 2, pt: 1.5, borderTop: `1px solid ${tokens.color.neutral[100]}` }}>
                 <Typography variant="body2" sx={{ fontWeight: 600, fontSize: 13 }}>
-                  Total Planned Expenses: ₹{formatCurrency((activeVersion?.plannedExpenses ?? []).reduce((sum, e) => sum + e.amount, 0))}
+                  Total Planned Expenses: ₹{formatInr(pitchFinMetrics.plannedExpensesTotal)}
                 </Typography>
               </Stack>
             </Box>

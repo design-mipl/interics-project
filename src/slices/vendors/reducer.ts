@@ -1,7 +1,7 @@
 import { createSlice } from '@reduxjs/toolkit'
 import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ActivityEntry, Contact } from '../customers/reducer'
-import { getVendorContactsList } from '@/utils/vendorContacts'
+import { getVendorContactsList, normalizeVendorContactsForSelect } from '@/utils/vendorContacts'
 import { applyVendorRecordPatch } from '@/utils/vendorComplianceDocuments'
 import {
   fetchVendors,
@@ -351,16 +351,16 @@ const vendorsSlice = createSlice({
         const idx = state.items.findIndex((v) => v.id === vendorId)
         if (idx !== -1) {
           const vendor = state.items[idx]
-          const baseContacts = vendor.contacts?.length
-            ? vendor.contacts
-            : getVendorContactsList(vendor)
+          const baseContacts = normalizeVendorContactsForSelect(
+            vendor.contacts?.length ? vendor.contacts : getVendorContactsList(vendor),
+          ).filter((c) => c.id !== 'legacy-primary')
           state.items[idx] = applyContacts(vendor, baseContacts)
         }
         if (state.selectedItem?.id === vendorId) {
           const vendor = state.selectedItem
-          const baseContacts = vendor.contacts?.length
-            ? vendor.contacts
-            : getVendorContactsList(vendor)
+          const baseContacts = normalizeVendorContactsForSelect(
+            vendor.contacts?.length ? vendor.contacts : getVendorContactsList(vendor),
+          ).filter((c) => c.id !== 'legacy-primary')
           state.selectedItem = applyContacts(vendor, baseContacts)
         }
       })
@@ -389,16 +389,16 @@ const vendorsSlice = createSlice({
         const idx = state.items.findIndex((v) => v.id === vendorId)
         if (idx !== -1) {
           const vendor = state.items[idx]
-          const baseContacts = vendor.contacts?.length
-            ? vendor.contacts
-            : getVendorContactsList(vendor)
+          const baseContacts = normalizeVendorContactsForSelect(
+            vendor.contacts?.length ? vendor.contacts : getVendorContactsList(vendor),
+          ).filter((c) => c.id !== 'legacy-primary')
           state.items[idx] = applyPrimaryListing(vendor, patchContacts(baseContacts))
         }
         if (state.selectedItem?.id === vendorId) {
           const vendor = state.selectedItem
-          const baseContacts = vendor.contacts?.length
-            ? vendor.contacts
-            : getVendorContactsList(vendor)
+          const baseContacts = normalizeVendorContactsForSelect(
+            vendor.contacts?.length ? vendor.contacts : getVendorContactsList(vendor),
+          ).filter((c) => c.id !== 'legacy-primary')
           state.selectedItem = applyPrimaryListing(vendor, patchContacts(baseContacts))
         }
       })

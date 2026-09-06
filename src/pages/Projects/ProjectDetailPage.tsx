@@ -36,7 +36,6 @@ import ProjectManagementTab from './tabs/ProjectManagementTab'
 import { store } from '@/store'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import { fetchProjects, fetchProjectById, updateProject, changeProjectStatus } from '../../slices/projects/thunk'
-import { fetchStatuses } from '../../slices/settings/thunk'
 import {
   lifecycleStatusForMasterName,
 } from '../../utils/masterChipStyles'
@@ -334,7 +333,7 @@ export default function ProjectDetailPage() {
   }, [project?.status, activeTab, project?.id])
 
   useEffect(() => {
-    dispatch(fetchStatuses())
+    // Do not call GET /settings/statuses — route is unused for Project Details.
     dispatch(fetchProjects({})).then((action) => {
       if (fetchProjects.fulfilled.match(action)) {
         const foundId = fromSlug(slug ?? '', action.payload.items)

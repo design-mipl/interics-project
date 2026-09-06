@@ -10,6 +10,7 @@
 
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -56,6 +57,8 @@ import {
   dashboardDateParams,
   type DashboardDateRange,
 } from '../dashboardDateRange'
+import { useDashboardReload } from '../useDashboardReload'
+import { DashboardSectionLoader } from '../DashboardTabLoader'
 
 interface ChartSeriesLegendItem {
   label: string
@@ -2816,7 +2819,7 @@ export function TeamTab({
     useState<YearlyRevenueByTeamMemberBundle | null>(null)
   const [serverProjectLifecycleByMember, setServerProjectLifecycleByMember] =
     useState<ProjectLifecycleByTeamMemberBundle | null>(null)
-  const [teamDashboardLoading, setTeamDashboardLoading] = useState(false)
+  const [teamDashboardLoading, setTeamDashboardLoading] = useState(true)
   const timePeriod: TeamTimePeriod = 'Lifetime'
   const requestParams = useMemo(() => dashboardDateParams(dateRange), [dateRange])
 
@@ -2824,15 +2827,15 @@ export function TeamTab({
     void dispatch(fetchProjects({ page: 1, pageSize: 500 }))
   }, [dispatch])
 
-  useEffect(() => {
-    let isMounted = true
-
-    async function loadTeamDashboard() {
+  const loadTeamDashboard = useCallback(
+    async (isActive: () => boolean) => {
       setTeamDashboardLoading(true)
       try {
-        const response = await client.get('/dashboard/team', { params: requestParams })
+        const response = await client.get('/dashboard/team', {
+          params: requestParams,
+        })
         const data = unwrapApiData<TeamDashboardResponse>(response.data)
-        if (!isMounted) return
+        if (!isActive()) return
         setServerPerformanceByMember(
           asPerformanceByTeamMemberBundle(data.data?.performanceByTeamMember),
         )
@@ -2843,22 +2846,18 @@ export function TeamTab({
           asYearlyRevenueByTeamMemberBundle(data.data?.yearlyRevenueByTeamMember),
         )
       } catch {
-        if (!isMounted) return
-        setServerPerformanceByMember(null)
-        setServerProjectLifecycleByMember(null)
-        setServerYearlyRevenueByMember(null)
+        // Keep last successful payload so a raced/failed refetch cannot blank charts.
+        if (!isActive()) return
       } finally {
-        if (isMounted) setTeamDashboardLoading(false)
+        if (isActive()) setTeamDashboardLoading(false)
       }
-    }
+    },
+    [requestParams],
+  )
 
-    void loadTeamDashboard()
+  useDashboardReload(loadTeamDashboard, [loadTeamDashboard])
 
-    return () => {
-      isMounted = false
-    }
-  }, [requestParams])
-
+  const showInitialLoader = teamDashboardLoading && serverPerformanceByMember == null
   const performance = useMemo(() => {
     return getTeamPerformanceAnalytics(
       projects,
@@ -2987,8 +2986,9 @@ export function TeamTab({
       <Box sx={{ mb: 2 }}>
         <ChartCard
           title="Team Performance"
-          subtitle={teamPerformanceSubtitle}
+          subtitle={showInitialLoader ? 'Loading team performance…' : teamPerformanceSubtitle}
           action={
+            showInitialLoader ? null : (
             <Box
               sx={{
                 display: 'flex',
@@ -3089,8 +3089,12 @@ export function TeamTab({
               </Box>
 
             </Box>
+            )
           }
         >
+          {showInitialLoader ? (
+            <DashboardSectionLoader minHeight={320} />
+          ) : (
           <TeamPerformanceGraph
             chart={chart}
             projectAreaChart={projectAreaChart}
@@ -3110,6 +3114,7 @@ export function TeamTab({
             }
             yearComparison={isYearComparison}
           />
+          )}
         </ChartCard>
       </Box>
 

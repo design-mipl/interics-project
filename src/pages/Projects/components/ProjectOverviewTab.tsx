@@ -15,14 +15,16 @@ import { store } from '@/store'
 import { useAppDispatch, useAppSelector } from '@/store/hooks'
 import { fetchCustomerById } from '@/slices/customers/thunk'
 import type { Contact } from '@/slices/customers/reducer'
-import { updateProject } from '@/slices/projects/thunk'
+import { updateProject, fetchProjectById, addProjectVendorAssociation } from '@/slices/projects/thunk'
 import type { ContactInfo, Project } from '@/slices/projects/reducer'
 import { getInitials, getAvatarColor } from '@/utils/formatters'
 import { getProjectAdditionalTeamMembers } from '@/utils/projectAssignedTeam'
-import { clientTeamFromContacts, getContactsForCustomer } from '../projectCreateHelpers'
+import { clientTeamFromContacts, getContactsForCustomer, isPersistedContactId } from '../projectCreateHelpers'
 import { CreateContactPersonModal } from './CreateContactPersonModal'
 import { EditProjectTeamDrawer } from './EditProjectTeamDrawer'
 import { ProjectDetailsSections } from './ProjectDetailsSections'
+import { fetchVendorById } from '@/slices/vendors/thunk'
+import { getVendorContactsList, normalizeVendorContactsForSelect } from '@/utils/vendorContacts'
 
 const OVERVIEW_CARD_SX = {
   bgcolor: 'background.paper',
@@ -35,6 +37,8 @@ const OVERVIEW_CARD_SX = {
 const TEAM_SECTION_CARD_SX = {
   ...OVERVIEW_CARD_SX,
   height: '100%',
+  minWidth: 0,
+  overflow: 'hidden',
   display: 'flex',
   flexDirection: 'column',
 } as const
@@ -61,7 +65,8 @@ export function ProjectOverviewTab({ project, readOnly = false }: ProjectOvervie
     selectedCustomer?.id === project.customerId ? selectedCustomer : null
   const existingCustomerContacts = getContactsForCustomer(customerForContacts)
 
-  /** Prefer live customer contacts so Client Team stays in sync with customer CRM. */
+  /** Prefer live customer contacts so Client Team stays in sync with customer CRM.
+   *  Append linked project vendor contacts (already on project detail) with a Vendor badge. */
   const clientTeamMembers = useMemo((): Array<{
     id: string
     name: string
@@ -69,32 +74,67 @@ export function ProjectOverviewTab({ project, readOnly = false }: ProjectOvervie
     phone: string
     email: string
     isPrimary: boolean
+    source: 'client' | 'vendor'
   }> => {
-    if (customerForContacts) {
-      return [...existingCustomerContacts]
-        .map((c: Contact) => ({
-          id: c.id,
-          name: c.name,
-          designation: c.designation ?? '',
-          phone: c.phone ?? '',
-          email: c.email ?? '',
-          isPrimary: Boolean(c.isPrimary),
-        }))
-        .sort((a, b) => {
-          if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1
-          return a.name.localeCompare(b.name)
-        })
-    }
+    const clientMembers =
+      customerForContacts
+        ? [...existingCustomerContacts]
+            .map((c: Contact) => ({
+              id: c.id,
+              name: c.name,
+              designation: c.designation ?? '',
+              phone: c.phone ?? '',
+              email: c.email ?? '',
+              isPrimary: Boolean(c.isPrimary),
+              source: 'client' as const,
+            }))
+            .sort((a, b) => {
+              if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1
+              return a.name.localeCompare(b.name)
+            })
+        : (project.clientTeam ?? []).map((m, idx) => ({
+            id: `project-client-${idx}`,
+            name: m.name ?? '',
+            designation: m.designation ?? '',
+            phone: m.phone ?? m.contact ?? '',
+            email: m.email ?? '',
+            isPrimary: idx === 0,
+            source: 'client' as const,
+          }))
 
-    return (project.clientTeam ?? []).map((m, idx) => ({
-      id: `project-client-${idx}`,
+    const vendorSource =
+      (project.vendors?.length
+        ? project.vendors.flatMap((group) =>
+            group.contacts.map((c) => ({
+              ...c,
+              company: group.vendorName,
+              vendorId: group.vendorId,
+              source: 'vendor' as const,
+            })),
+          )
+        : project.vendorContacts) ?? []
+
+    const vendorMembers = vendorSource.map((m, idx) => ({
+      id: m.id?.trim() || `project-vendor-${idx}-${m.name ?? ''}-${m.phone ?? m.contact ?? ''}`,
       name: m.name ?? '',
       designation: m.designation ?? '',
       phone: m.phone ?? m.contact ?? '',
       email: m.email ?? '',
-      isPrimary: idx === 0,
+      isPrimary: false,
+      source: 'vendor' as const,
     }))
-  }, [customerForContacts, existingCustomerContacts, project.clientTeam])
+
+    // Deduplicate vendor rows by contact id only (never by name).
+    const seenVendorIds = new Set<string>()
+    const dedupedVendors = vendorMembers.filter((m) => {
+      if (!m.name.trim() && !m.phone.trim()) return false
+      if (seenVendorIds.has(m.id)) return false
+      seenVendorIds.add(m.id)
+      return true
+    })
+
+    return [...clientMembers, ...dedupedVendors]
+  }, [customerForContacts, existingCustomerContacts, project.clientTeam, project.vendorContacts, project.vendors])
 
   useEffect(() => {
     if (project.customerId) {
@@ -118,17 +158,72 @@ export function ProjectOverviewTab({ project, readOnly = false }: ProjectOvervie
         ? getContactsForCustomer(latestCustomer)
         : existingCustomerContacts
 
+    // Always merge against the latest project in the store (avoids stale props after a prior save).
+    const latestProject =
+      store.getState().projects.selectedItem?.id === project.id
+        ? store.getState().projects.selectedItem
+        : project
+    const projectForMerge = latestProject ?? project
+
+    // Persist vendor association via additive API — never replace other vendors/contacts.
+    if (info.source === 'vendor' && info.vendorId && isPersistedContactId(info.id)) {
+      const vendorDetail = await dispatch(fetchVendorById(info.vendorId)).unwrap()
+      const validIds = new Set(
+        normalizeVendorContactsForSelect(getVendorContactsList(vendorDetail))
+          .map((c) => c.id)
+          .filter((id) => isPersistedContactId(id)),
+      )
+      if (!validIds.has(info.id)) {
+        throw new Error(
+          'Selected vendor contact is not linked to this vendor yet. Re-select the contact and try again.',
+        )
+      }
+
+      await dispatch(
+        addProjectVendorAssociation({
+          id: project.id,
+          vendorId: info.vendorId,
+          vendorContactIds: [info.id],
+        }),
+      ).unwrap()
+
+      await dispatch(fetchProjectById(project.id)).unwrap()
+      return
+    }
+
+    // Customer contacts: append the assigned contact to existing project links.
+    const existingCustomerIds = (projectForMerge.clientTeam ?? [])
+      .map((c) => c.id)
+      .filter((id): id is string => Boolean(id) && isPersistedContactId(id))
+
+    const assignedCustomerId = isPersistedContactId(info.id) ? info.id : undefined
+    const contactIds = [
+      ...new Set([
+        ...existingCustomerIds,
+        ...(assignedCustomerId ? [assignedCustomerId] : []),
+        ...contacts.map((c) => c.id).filter((id) => isPersistedContactId(id)),
+      ]),
+    ]
+
     const nextTeam =
       contacts.length > 0
         ? clientTeamFromContacts(contacts, project.customerName ?? '')
-        : [...(project.clientTeam ?? []), info]
+        : [
+            ...(projectForMerge.clientTeam ?? []),
+            ...(info.name ? [info] : []),
+          ]
 
     await dispatch(
       updateProject({
         id: project.id,
-        data: { clientTeam: nextTeam },
+        data: {
+          ...(contactIds.length ? { contactIds } : {}),
+          clientTeam: nextTeam,
+        },
       }),
     ).unwrap()
+
+    await dispatch(fetchProjectById(project.id)).unwrap()
   }
 
   const TeamsRow = (
@@ -288,8 +383,10 @@ export function ProjectOverviewTab({ project, readOnly = false }: ProjectOvervie
           <Box
             sx={{
               flex: 1,
+              minWidth: 0,
+              width: '100%',
               display: 'grid',
-              gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
+              gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
               gap: 1.25,
               alignItems: 'start',
             }}
@@ -298,6 +395,7 @@ export function ProjectOverviewTab({ project, readOnly = false }: ProjectOvervie
               const memberId = member.id
               const isExpanded = expandedClientIds.has(memberId)
               const isPrimary = member.isPrimary
+              const isVendor = member.source === 'vendor'
 
               return (
                 <Box
@@ -306,6 +404,8 @@ export function ProjectOverviewTab({ project, readOnly = false }: ProjectOvervie
                     display: 'flex',
                     flexDirection: 'column',
                     minWidth: 0,
+                    maxWidth: '100%',
+                    overflow: 'hidden',
                     border: '1px solid',
                     borderColor: isPrimary ? 'primary.light' : 'divider',
                     borderRadius: 2,
@@ -329,16 +429,17 @@ export function ProjectOverviewTab({ project, readOnly = false }: ProjectOvervie
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
-                      gap: 1.5,
+                      gap: 1,
                       cursor: 'pointer',
                       outline: 'none',
+                      minWidth: 0,
                       '&:focus-visible': {
                         borderRadius: 1,
                         boxShadow: `0 0 0 2px ${alpha(theme.palette.primary.main, 0.35)}`,
                       },
                     }}
                   >
-                    <Stack direction="row" alignItems="center" gap={1.5} sx={{ minWidth: 0, flex: 1 }}>
+                    <Stack direction="row" alignItems="center" gap={1.25} sx={{ minWidth: 0, flex: 1 }}>
                       <Box
                         sx={{
                           width: 40,
@@ -356,16 +457,26 @@ export function ProjectOverviewTab({ project, readOnly = false }: ProjectOvervie
                       >
                         {getInitials(member.name || 'Client')}
                       </Box>
-                      <Box sx={{ minWidth: 0, flex: 1 }}>
-                        <Stack direction="row" alignItems="center" gap={1} sx={{ minWidth: 0 }}>
+                      <Box sx={{ minWidth: 0, flex: 1, overflow: 'hidden' }}>
+                        <Stack
+                          direction="row"
+                          alignItems="center"
+                          gap={0.75}
+                          sx={{ minWidth: 0 }}
+                          flexWrap="wrap"
+                          useFlexGap
+                        >
                           <Typography
                             variant="body2"
+                            title={member.name || undefined}
                             sx={{
                               fontSize: 13,
                               fontWeight: 600,
                               overflow: 'hidden',
                               textOverflow: 'ellipsis',
                               whiteSpace: 'nowrap',
+                              minWidth: 0,
+                              maxWidth: '100%',
                             }}
                           >
                             {member.name || '—'}
@@ -387,9 +498,27 @@ export function ProjectOverviewTab({ project, readOnly = false }: ProjectOvervie
                               }}
                             />
                           ) : null}
+                          {isVendor ? (
+                            <MuiChip
+                              size="small"
+                              label="Vendor"
+                              sx={{
+                                height: 20,
+                                fontSize: 10,
+                                borderRadius: '6px',
+                                flexShrink: 0,
+                                bgcolor: alpha(theme.palette.warning.main, 0.12),
+                                color: 'warning.dark',
+                                border: '1px solid',
+                                borderColor: alpha(theme.palette.warning.main, 0.35),
+                                '& .MuiChip-label': { px: 1 },
+                              }}
+                            />
+                          ) : null}
                         </Stack>
                         <Typography
                           variant="caption"
+                          title={member.designation || undefined}
                           sx={{
                             fontSize: 11,
                             color: 'text.secondary',

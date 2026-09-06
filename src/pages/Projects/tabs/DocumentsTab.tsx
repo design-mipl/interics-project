@@ -14,15 +14,15 @@ import {
   ToggleButtonGroup,
   Typography,
 } from '@mui/material'
-import { FileUp, Plus, Trash2 } from 'lucide-react'
+import { FileUp, Trash2 } from 'lucide-react'
 import { DrawerForm, FormField } from '../../../components/templates/DrawerForm'
 import {
   Badge,
   Button,
   IconButton,
   Input,
-  Modal,
   Select,
+  useToast,
 } from '@/design-system/components'
 import { DocumentUploadFormBody } from '@/components/forms/DocumentUploadFormBody'
 import { tokens } from '@/design-system/tokens'
@@ -37,6 +37,7 @@ import {
 } from './live/vendorSettlement/utils'
 import { liveApi, type ProjectDocumentListItem } from '@/api/liveApi'
 import { openAuthenticatedDocument } from '@/utils/openAuthenticatedDocument'
+import { parseSettingsApiError } from '@/modules/system-settings/shared/api-errors'
 import { ProjectTabSkeleton } from '../components/ProjectTabSkeleton'
 import {
   isLegacyInternalUploadCategory,
@@ -97,6 +98,7 @@ const BUILTIN_CATEGORY_OPTIONS: CategoryOption[] = [
   { value: 'client_documents', label: 'Client Documents' },
   { value: 'vendor_documents', label: 'Vendor Documents' },
   { value: 'project_documents', label: 'Project Documents' },
+  { value: 'other', label: 'Others' },
 ]
 
 const BUILTIN_TYPE_LABELS: Record<string, string> = {
@@ -117,7 +119,7 @@ const BUILTIN_TYPE_LABELS: Record<string, string> = {
   final_views: 'Final Views',
   final_photographs: 'Final Photographs',
   handover: 'Handover',
-  other: 'Other',
+  other: 'Others',
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -351,6 +353,7 @@ interface DocumentsTabProps {
 
 export default function DocumentsTab({ project }: DocumentsTabProps) {
   const dispatch = useAppDispatch()
+  const toast = useToast((s) => s.showToast)
   const authUser = useAppSelector((s) => s.auth.user)
   const listProjects = useAppSelector((s) => s.projects.items ?? [])
   const clientPOs = useAppSelector((s) => s.baseline.clientPOs)
@@ -369,9 +372,6 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
   const [search, setSearch] = useState('')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [customCategories, setCustomCategories] = useState<CategoryOption[]>([])
-  const [addCategoryOpen, setAddCategoryOpen] = useState(false)
-  const [newCategoryName, setNewCategoryName] = useState('')
-  const [newCategoryError, setNewCategoryError] = useState('')
   const [uploading, setUploading] = useState(false)
 
   const [docName, setDocName] = useState('')
@@ -409,7 +409,13 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
         if (cancelled) return
         setApiDocuments(rows)
         setCustomCategories(
-          doctypes.map((d) => ({ value: d.value, label: d.label })),
+          doctypes
+            .filter((d) => {
+              const label = d.label.trim().toLowerCase()
+              const value = d.value.trim().toLowerCase()
+              return label !== 'others' && label !== 'other' && value !== 'other' && value !== 'others'
+            })
+            .map((d) => ({ value: d.value, label: d.label })),
         )
       } catch {
         if (!cancelled) {
@@ -423,6 +429,27 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
       cancelled = true
     }
   }, [project.id, filter])
+
+  const openDocumentUrl = useCallback(
+    (url: string | null | undefined) => {
+      if (!url?.trim()) {
+        toast({
+          title: 'Unable to open document',
+          description: 'No document URL is available.',
+          variant: 'error',
+        })
+        return
+      }
+      void openAuthenticatedDocument(url, () => {
+        toast({
+          title: 'Unable to open document',
+          description: 'The document could not be opened. Try again or re-upload the file.',
+          variant: 'error',
+        })
+      })
+    },
+    [toast],
+  )
 
   const apiRowsByDoctype = useCallback(
     (doctype: string | string[]): ColumnRow[] => {
@@ -438,23 +465,26 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
             dateStr: formatDate(doc.uploadedAt),
             sizeStr: doc.sizeBytes != null ? formatBytes(doc.sizeBytes) : '—',
             isUpload: false,
-            canDelete: false,
+            canDelete: doc.source === 'project',
             onView: () => {
-              if (doc.viewUrl) void openAuthenticatedDocument(doc.viewUrl)
+              openDocumentUrl(doc.viewUrl)
             },
             onDownload: () => {
-              if (doc.downloadUrl) void openAuthenticatedDocument(doc.downloadUrl)
+              openDocumentUrl(doc.downloadUrl)
             },
           }),
         )
     },
-    [apiDocuments],
+    [apiDocuments, openDocumentUrl],
   )
 
-  const categoryOptions = useMemo(
-    () => [...BUILTIN_CATEGORY_OPTIONS, ...customCategories],
-    [customCategories],
-  )
+  const categoryOptions = useMemo(() => {
+    const builtinValues = new Set(BUILTIN_CATEGORY_OPTIONS.map((o) => o.value.toLowerCase()))
+    const extras = customCategories.filter(
+      (c) => !builtinValues.has(c.value.toLowerCase()) && c.label.trim().toLowerCase() !== 'others',
+    )
+    return [...BUILTIN_CATEGORY_OPTIONS, ...extras]
+  }, [customCategories])
 
   const uploadsFiltered = useMemo(() => {
     const q = search
@@ -470,7 +500,7 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
     id: u.id,
     name: u.displayName,
     typeLabel: typeLabelForUpload(u.category, customCategories),
-    uploadedBy: u.uploadedBy,
+    uploadedBy: u.uploadedBy.trim().split(/\s+/)[0] || u.uploadedBy || '—',
     dateStr: formatDate(u.uploadedAt),
     sizeStr: formatBytes(u.sizeBytes),
     isUpload: true,
@@ -478,7 +508,14 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
     fileName: u.fileName,
     canDelete: Boolean(authUser?.id && u.uploadedByUserId === authUser.id),
     onView: () => {
-      openProjectUploadInNewTab(u)
+      const opened = openProjectUploadInNewTab(u)
+      if (!opened) {
+        toast({
+          title: 'Unable to open document',
+          description: 'The uploaded file is no longer available in this session.',
+          variant: 'error',
+        })
+      }
     },
     onDownload: () => {
       const a = document.createElement('a')
@@ -537,23 +574,23 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
           isUpload: false,
           canDelete: false,
           onView: () => {
-            if (doc.viewUrl) void openAuthenticatedDocument(doc.viewUrl)
+            openDocumentUrl(doc.viewUrl)
           },
         }),
       )
     return filterDocumentRowsBySearch(
-      mergeDocumentRows(fromBaseline, fromApi),
+      mergeDocumentRows(fromApi, fromBaseline),
       search,
       matchesSearch,
     )
-  }, [clientPOs, project.id, search, apiDocuments])
+  }, [clientPOs, project.id, search, apiDocuments, openDocumentUrl])
 
   const clientPO = useMemo(
     () =>
       filterDocumentRowsBySearch(
         mergeDocumentRows(
-          pickUploads('client_po').map(buildUploadColumnRow),
           baselineClientPORows,
+          pickUploads('client_po').map(buildUploadColumnRow),
         ),
         search,
         matchesSearch,
@@ -579,16 +616,16 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
           isUpload: false,
           canDelete: false,
           onView: () => {
-            if (doc.viewUrl) void openAuthenticatedDocument(doc.viewUrl)
+            openDocumentUrl(doc.viewUrl)
           },
         }),
       )
     return filterDocumentRowsBySearch(
-      mergeDocumentRows(fromBaseline, fromApi),
+      mergeDocumentRows(fromApi, fromBaseline),
       search,
       matchesSearch,
     )
-  }, [vendorPOList, project.id, search, apiDocuments])
+  }, [vendorPOList, project.id, search, apiDocuments, openDocumentUrl])
 
   const pitchVendorQuotationRows = useMemo(() => {
     const rows = collectPitchVendorQuotationRows(pitchActiveVersion, project.id)
@@ -628,6 +665,19 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
         mergeDocumentRows(
           pickUploads('vendor_documents').map(buildUploadColumnRow),
           apiRowsByDoctype(['vendor_documents', 'vendor_invoice']),
+        ),
+        search,
+        matchesSearch,
+      ),
+    [uploadsFiltered, search, apiRowsByDoctype, customCategories],
+  )
+
+  const othersDocumentRows = useMemo(
+    () =>
+      filterDocumentRowsBySearch(
+        mergeDocumentRows(
+          pickUploads('other').map(buildUploadColumnRow),
+          apiRowsByDoctype('other'),
         ),
         search,
         matchesSearch,
@@ -684,8 +734,71 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
   }, [projectForDocuments, apiDocuments])
 
   const handleDelete = (id: string) => {
-    removeUpload(id)
+    void (async () => {
+      const apiMatch = apiDocuments.find(
+        (doc) => doc.id === id || `api-${doc.doctype}-${doc.id}` === id,
+      )
+
+      // Persisted project uploads must always hit DELETE — never local-only short-circuit.
+      if (apiMatch) {
+        if (apiMatch.source !== 'project') {
+          toast({
+            title: 'Unable to delete document',
+            description: 'This document cannot be deleted from here.',
+            variant: 'error',
+          })
+          return
+        }
+        try {
+          await liveApi.deleteProjectDocument(project.id, apiMatch.id)
+          setApiDocuments((prev) => prev.filter((doc) => doc.id !== apiMatch.id))
+          removeUpload(apiMatch.id)
+          removeUpload(id)
+          toast({ title: 'Document deleted', variant: 'success' })
+          try {
+            const rows = await liveApi.getProjectDocuments(project.id, {
+              doctype:
+                filter === 'all'
+                  ? undefined
+                  : filter === 'client' || filter === 'vendor' || filter === 'project'
+                    ? filter
+                    : (filter as string),
+            })
+            setApiDocuments(rows)
+          } catch {
+            // Optimistic removal already applied
+          }
+        } catch (err) {
+          toast({
+            title: 'Unable to delete document',
+            description: parseSettingsApiError(err, 'The delete request failed. Try again.').message,
+            variant: 'error',
+          })
+        }
+        return
+      }
+
+      const isLocal = uploads.some((u) => u.id === id)
+      if (isLocal) {
+        removeUpload(id)
+        toast({ title: 'Document deleted', variant: 'success' })
+        return
+      }
+
+      toast({
+        title: 'Unable to delete document',
+        description: 'This document cannot be deleted from here.',
+        variant: 'error',
+      })
+    })()
   }
+
+  const openDrawer = () => {
+    setFormErrors({})
+    setDrawerOpen(true)
+  }
+
+  const closeDrawer = () => setDrawerOpen(false)
 
   const baselineDocumentCount = useMemo(() => {
     const clientCount = clientPOs.filter(
@@ -715,6 +828,8 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
   const projectRowCount = projectDocumentSections.reduce((sum, s) => sum + s.rows.length, 0)
   const clientRowCount = clientQuotations.length + clientPO.length + clientDocumentUploads.length
   const vendorRowCount = vendorQuotations.length + vendorPORows.length + vendorDocumentUploads.length
+  const othersRowCount = othersDocumentRows.length
+  const showOthers = filter === 'all' && !isCustomFilter
 
   const customCategorySections = useMemo(
     () =>
@@ -748,6 +863,7 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
       if (showProject) n += projectRowCount
       if (showClient) n += clientRowCount
       if (showVendor) n += vendorRowCount
+      if (showOthers) n += othersRowCount
     }
     n += customRowCount
     return n
@@ -755,10 +871,12 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
     showProject,
     showClient,
     showVendor,
+    showOthers,
     isCustomFilter,
     projectRowCount,
     clientRowCount,
     vendorRowCount,
+    othersRowCount,
     customRowCount,
   ])
 
@@ -818,56 +936,6 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
 
   if (docsLoading) {
     return <ProjectTabSkeleton rows={5} />
-  }
-
-  const openDrawer = () => {
-    setFormErrors({})
-    setDrawerOpen(true)
-  }
-
-  const closeDrawer = () => setDrawerOpen(false)
-
-  const openAddCategory = () => {
-    setNewCategoryName('')
-    setNewCategoryError('')
-    setAddCategoryOpen(true)
-  }
-
-  const closeAddCategory = () => {
-    setAddCategoryOpen(false)
-    setNewCategoryName('')
-    setNewCategoryError('')
-  }
-
-  const handleAddCategory = async () => {
-    const label = newCategoryName.trim()
-    if (!label) {
-      setNewCategoryError('Category name is required')
-      return
-    }
-    const exists = categoryOptions.some(
-      (o) => o.label.toLowerCase() === label.toLowerCase(),
-    )
-    if (exists) {
-      setNewCategoryError('Category already exists')
-      return
-    }
-    try {
-      const created = await liveApi.createDocumentDoctype(project.id, { label })
-      if (!created) {
-        setNewCategoryError('Failed to create category')
-        return
-      }
-      setCustomCategories((prev) => [...prev, { value: created.value, label: created.label }])
-      setFilter(created.value)
-      if (drawerOpen) {
-        setCategory(created.value as UploadCategory)
-        setFormErrors((prev) => ({ ...prev, category: undefined }))
-      }
-      closeAddCategory()
-    } catch {
-      setNewCategoryError('Failed to create category for this project')
-    }
   }
 
   const handleSubmit = async () => {
@@ -937,24 +1005,14 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
             </ToggleButton>
           ))}
         </ToggleButtonGroup>
-        <Stack direction="row" alignItems="center" gap={1} sx={{ minWidth: { md: 220 }, flex: 1 }}>
-          <IconButton
+        <Box sx={{ minWidth: { md: 220 }, flex: 1 }}>
+          <Input
+            placeholder="Search documents…"
+            value={search}
+            onChange={setSearch}
             size="sm"
-            variant="outlined"
-            color="primary"
-            icon={<Plus size={16} strokeWidth={1.75} />}
-            tooltip="Add category"
-            onClick={openAddCategory}
           />
-          <Box sx={{ flex: 1, minWidth: 0 }}>
-            <Input
-              placeholder="Search documents…"
-              value={search}
-              onChange={setSearch}
-              size="sm"
-            />
-          </Box>
-        </Stack>
+        </Box>
       </Stack>
       <Button
         variant="contained"
@@ -966,38 +1024,6 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
         Upload Document
       </Button>
     </Stack>
-  )
-
-  const addCategoryModal = (
-    <Modal
-      open={addCategoryOpen}
-      onClose={closeAddCategory}
-      title="Add Category"
-      size="xs"
-      footer={
-        <Stack direction="row" spacing={1} justifyContent="flex-end" sx={{ width: 1 }}>
-          <Button variant="outlined" color="secondary" size="sm" onClick={closeAddCategory}>
-            Cancel
-          </Button>
-          <Button variant="contained" color="primary" size="sm" onClick={handleAddCategory}>
-            Add Category
-          </Button>
-        </Stack>
-      }
-    >
-      <FormField label="Category Name" error={newCategoryError}>
-        <Input
-          placeholder="e.g. Contracts, Site Photos"
-          value={newCategoryName}
-          onChange={(v) => {
-            setNewCategoryName(v)
-            if (newCategoryError) setNewCategoryError('')
-          }}
-          size="sm"
-          error={Boolean(newCategoryError)}
-        />
-      </FormField>
-    </Modal>
   )
 
   if (globalEmpty) {
@@ -1045,10 +1071,8 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
             notes={notes}
             setNotes={setNotes}
             formErrors={formErrors}
-            onAddCategory={openAddCategory}
           />
         </DrawerForm>
-        {addCategoryModal}
       </Box>
     )
   }
@@ -1074,6 +1098,16 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
 
         {showVendor && !isCustomFilter && (
           <DocumentGroup title="Vendor Documents">{vendorDocumentContent}</DocumentGroup>
+        )}
+
+        {showOthers && othersRowCount > 0 && (
+          <DocumentGroup title="Others">
+            <SubsectionBlock
+              title="Uploads"
+              rows={othersDocumentRows}
+              onDelete={handleDelete}
+            />
+          </DocumentGroup>
         )}
 
         {customCategorySections.map((section) => {
@@ -1111,10 +1145,8 @@ export default function DocumentsTab({ project }: DocumentsTabProps) {
           notes={notes}
           setNotes={setNotes}
           formErrors={formErrors}
-          onAddCategory={openAddCategory}
         />
       </DrawerForm>
-      {addCategoryModal}
     </Box>
   )
 }
@@ -1130,7 +1162,6 @@ function UploadFormBody({
   setNotes,
   formErrors,
   uploadResetKey,
-  onAddCategory,
 }: {
   docName: string
   setDocName: (v: string) => void
@@ -1142,7 +1173,6 @@ function UploadFormBody({
   setNotes: (v: string) => void
   formErrors: { name?: string; category?: string }
   uploadResetKey?: number
-  onAddCategory?: () => void
 }) {
   return (
     <DocumentUploadFormBody
@@ -1159,34 +1189,9 @@ function UploadFormBody({
             placeholder="Select category"
             value={category || undefined}
             onChange={(v) => {
-              if (v === '__add_category__') {
-                onAddCategory?.()
-                return
-              }
               setCategory(v as UploadCategory)
             }}
-            options={[
-              ...categoryOptions.map((o) => ({ label: o.label, value: o.value })),
-              ...(onAddCategory
-                ? [
-                    {
-                      label: 'Add others',
-                      value: '__add_category__',
-                      icon: (
-                        <Plus
-                          size={14}
-                          strokeWidth={1.75}
-                          color={tokens.color.success[700]}
-                        />
-                      ),
-                      sx: {
-                        color: tokens.color.success[700],
-                        fontWeight: 600,
-                      },
-                    },
-                  ]
-                : []),
-            ]}
+            options={categoryOptions.map((o) => ({ label: o.label, value: o.value }))}
             size="sm"
             fullWidth
           />

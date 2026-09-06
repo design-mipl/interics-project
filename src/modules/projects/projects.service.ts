@@ -144,8 +144,23 @@ export const projectsService = {
     return toProjectFromDetail(unwrapApiData<ProjectDetailApi>(res.data))
   },
 
-  async update(id: string, data: Partial<Project> & { contactIds?: string[] }): Promise<Project> {
+  async update(
+    id: string,
+    data: Partial<Project> & { contactIds?: string[]; vendorContactIds?: string[] },
+  ): Promise<Project> {
     const res = await client.put(`${BASE}/${id}`, toUpdatePayload(data))
+    return toProjectFromDetail(unwrapApiData<ProjectDetailApi>(res.data))
+  },
+
+  /** Additive: attach vendor + contacts without replacing other project vendors. */
+  async addVendorAssociation(
+    id: string,
+    data: { vendorId: string; vendorContactIds: string[] },
+  ): Promise<Project> {
+    const res = await client.post(`${BASE}/${id}/vendors`, {
+      vendorId: data.vendorId,
+      vendorContactIds: data.vendorContactIds,
+    })
     return toProjectFromDetail(unwrapApiData<ProjectDetailApi>(res.data))
   },
 

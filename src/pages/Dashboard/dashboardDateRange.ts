@@ -1,7 +1,11 @@
 import { isoFromDate } from '@/design-system/components'
 
 export type DashboardDateRange = [Date | null, Date | null]
-export type DashboardDatePeriod = 'This Month' | 'Last Month' | 'This Financial Year' | 'Custom Range'
+export type DashboardDatePeriod =
+  | 'This Month'
+  | 'Last 6 Months'
+  | 'This Financial Year'
+  | 'Custom Range'
 
 export function getCurrentFinancialYearRange(anchor = new Date()): DashboardDateRange {
   const startYear = anchor.getMonth() >= 3 ? anchor.getFullYear() : anchor.getFullYear() - 1
@@ -13,8 +17,10 @@ export function getDashboardPeriodRange(period: DashboardDatePeriod, anchor = ne
     return [new Date(anchor.getFullYear(), anchor.getMonth(), 1), new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0)]
   }
 
-  if (period === 'Last Month') {
-    return [new Date(anchor.getFullYear(), anchor.getMonth() - 1, 1), new Date(anchor.getFullYear(), anchor.getMonth(), 0)]
+  if (period === 'Last 6 Months') {
+    const end = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate())
+    const start = new Date(anchor.getFullYear(), anchor.getMonth() - 6, anchor.getDate())
+    return [start, end]
   }
 
   if (period === 'This Financial Year') {

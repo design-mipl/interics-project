@@ -340,7 +340,7 @@ function ClientInvoiceTaxSummary({
 
 // ─── View Invoice Drawer ─────────────────────────────────────────────────────
 
-interface ViewInvoiceDrawerProps {
+export interface ViewInvoiceDrawerProps {
   open: boolean
   invoice: ClientInvoice | null
   projectName: string
@@ -349,7 +349,7 @@ interface ViewInvoiceDrawerProps {
   onDownloadPdf: () => void
 }
 
-function ViewInvoiceDrawer({
+export function ViewInvoiceDrawer({
   open,
   invoice,
   projectName,

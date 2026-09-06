@@ -119,13 +119,34 @@ export const createProject = createAsyncThunk(
 export const updateProject = createAsyncThunk(
   'projects/update',
   async (
-    { id, data }: { id: string; data: Partial<Project> & { contactIds?: string[] } },
+    {
+      id,
+      data,
+    }: { id: string; data: Partial<Project> & { contactIds?: string[]; vendorContactIds?: string[] } },
     { rejectWithValue },
   ) => {
     try {
       return await projectsService.update(id, data)
     } catch (err: unknown) {
       return rejectWithValue(rejectProject(err, 'Failed to update project'))
+    }
+  },
+)
+
+export const addProjectVendorAssociation = createAsyncThunk(
+  'projects/addVendorAssociation',
+  async (
+    {
+      id,
+      vendorId,
+      vendorContactIds,
+    }: { id: string; vendorId: string; vendorContactIds: string[] },
+    { rejectWithValue },
+  ) => {
+    try {
+      return await projectsService.addVendorAssociation(id, { vendorId, vendorContactIds })
+    } catch (err: unknown) {
+      return rejectWithValue(rejectProject(err, 'Failed to add project vendor contact'))
     }
   },
 )

@@ -63,7 +63,7 @@ import { EditProjectDrawer } from './components/EditProjectDrawer'
 import { tokens } from '@/design-system/tokens'
 import { useTheme } from '@mui/material/styles'
 import {
-  formatCurrency,
+  formatInr,
   formatDate,
   getInitials,
   getAvatarColor,
@@ -111,6 +111,7 @@ function buildProjectListColumns(cols: ColumnVisibility): string[] {
     ...(cols.dates ? (['expectedStartDate', 'expectedEndDate'] as const) : []),
     'totalDesignFee',
     'totalBuildValue',
+    'totalClientPOValue',
     'createdAt',
     'wentLiveAt',
     'completedAt',
@@ -175,6 +176,7 @@ interface RowActionsProps {
   canView: boolean
   canEdit: boolean
   canDelete: boolean
+  showChangeStatus: boolean
   onView: () => void
   onEdit: () => void
   onChangeStatus: () => void
@@ -188,6 +190,7 @@ function RowActions({
   canView,
   canEdit,
   canDelete,
+  showChangeStatus,
   onView,
   onEdit,
   onChangeStatus,
@@ -228,7 +231,7 @@ function RowActions({
             <Edit sx={{ fontSize: 14 }} /> Edit Basic Info
           </MenuItem>
         ) : null}
-        {canEdit ? (
+        {canEdit && showChangeStatus ? (
           <>
             <Divider />
             <MenuItem
@@ -284,6 +287,7 @@ interface ProjectsTableProps {
   onDualDateFilter: (start: string, end: string) => void
   statusDateField: 'createdAt' | 'wentLiveAt' | 'completedAt' | 'archivedAt' | 'cancelledAt'
   statusDateLabel: string
+  showChangeStatus: boolean
   onView: (project: Project) => void
   onEdit: (project: Project) => void
   onChangeStatus: (project: Project) => void
@@ -308,6 +312,7 @@ function ProjectsTable({
   onDualDateFilter,
   statusDateField,
   statusDateLabel,
+  showChangeStatus,
   onView,
   onEdit,
   onChangeStatus,
@@ -331,7 +336,7 @@ function ProjectsTable({
   if (items.length === 0) {
     return (
       <Box sx={{ py: 8, textAlign: 'center' }}>
-        <Box sx={{ color: tokens.color.neutral[300], mb: 1, display: 'flex' }}>
+        <Box sx={{ color: tokens.color.neutral[300], mb: 1, display: 'flex', justifyContent: 'center' }}>
           <FolderKanban size={40} strokeWidth={1.5} />
         </Box>
         <Typography variant="body2" color="text.secondary">
@@ -414,7 +419,10 @@ function ProjectsTable({
             {columns.projectLead && (
               <FilterableSortHeader
                 label="Project Lead"
-                sortable={false}
+                field="projectLeadName"
+                sortField={sortField ?? undefined}
+                sortDirection={sortDirection}
+                onSort={onSort}
                 filterValue={colFilters.projectLeadId ?? ''}
                 filterOptions={filterOptions.projectLeadId ?? []}
                 onFilter={(v) => onColumnFilter('projectLeadId', v)}
@@ -588,6 +596,7 @@ function ProjectsTable({
                         canView={canView}
                         canEdit={canEdit}
                         canDelete={canDelete}
+                        showChangeStatus={showChangeStatus}
                         onView={() => onView(project)}
                         onEdit={() => onEdit(project)}
                         onChangeStatus={() => onChangeStatus(project)}
@@ -614,6 +623,7 @@ interface ProjectGridCardProps {
   canView: boolean
   canEdit: boolean
   canDelete: boolean
+  showChangeStatus: boolean
   onView: (project: Project) => void
   onEdit: (project: Project) => void
   onChangeStatus: (project: Project) => void
@@ -627,6 +637,7 @@ function ProjectGridCard({
   canView,
   canEdit,
   canDelete,
+  showChangeStatus,
   onView,
   onEdit,
   onChangeStatus,
@@ -706,7 +717,7 @@ function ProjectGridCard({
                   <Edit sx={{ fontSize: 14 }} /> Edit
                 </MenuItem>
               ) : null}
-              {canEdit ? (
+              {canEdit && showChangeStatus ? (
                 <>
                   <Divider />
                   <MenuItem onClick={() => { setAnchor(null); onChangeStatus(project) }} sx={{ fontSize: 13 }}>
@@ -773,7 +784,7 @@ function ProjectGridCard({
       {/* Value + dates */}
       <Stack direction="row" alignItems="center" justifyContent="space-between">
         <Typography variant="h6" sx={{ fontWeight: 700, fontSize: 14, color: theme.palette.primary.main }}>
-          ₹{formatCurrency(project.projectValue)}
+          ₹{formatInr(project.totalClientPOValue)}
         </Typography>
         {(project.startDate || project.expectedEndDate) && (
           <Typography variant="caption" sx={{ fontSize: 10, color: tokens.color.neutral[400] }}>
@@ -793,6 +804,7 @@ interface ProjectsGridProps {
   canView: boolean
   canEdit: boolean
   canDelete: boolean
+  showChangeStatus: boolean
   onView: (project: Project) => void
   onEdit: (project: Project) => void
   onChangeStatus: (project: Project) => void
@@ -807,6 +819,7 @@ function ProjectsGrid({
   canView,
   canEdit,
   canDelete,
+  showChangeStatus,
   onView,
   onEdit,
   onChangeStatus,
@@ -860,6 +873,7 @@ function ProjectsGrid({
           canView={canView}
           canEdit={canEdit}
           canDelete={canDelete}
+          showChangeStatus={showChangeStatus}
           onView={onView}
           onEdit={onEdit}
           onChangeStatus={onChangeStatus}
@@ -1056,8 +1070,8 @@ export default function ProjectsPage() {
           type: nextCols.projectType || filters.type || undefined,
           projectManager: nextCols.projectLeadId || filters.projectManager || undefined,
           projectName: nextCols.projectName || undefined,
-          expectedStartDate: nextCols.expectedStartDate || undefined,
-          expectedEndDate: nextCols.expectedEndDate || undefined,
+          expectedStartDate: nextCols.expectedStartDate || filters.expectedStartDate || undefined,
+          expectedEndDate: nextCols.expectedEndDate || filters.expectedEndDate || undefined,
           createdAt: nextCols.createdAt || undefined,
           wentLiveAt: nextCols.wentLiveAt || undefined,
           completedAt: nextCols.completedAt || undefined,
@@ -1097,7 +1111,7 @@ export default function ProjectsPage() {
     archived: 0,
   })
 
-  useEffect(() => {
+  const refreshProjectSummary = useCallback(() => {
     void financeApi
       .getProjectsSummary()
       .then((res) => {
@@ -1124,6 +1138,10 @@ export default function ProjectsPage() {
       })
       .catch(() => undefined)
   }, [])
+
+  useEffect(() => {
+    refreshProjectSummary()
+  }, [refreshProjectSummary])
 
   const statCards = [
     {
@@ -1203,6 +1221,16 @@ export default function ProjectsPage() {
         ...managerOptions.map((o) => ({ label: o.label, value: o.value })),
       ],
     },
+    {
+      field: 'expectedStartDate',
+      label: 'Start Date',
+      type: 'date' as const,
+    },
+    {
+      field: 'expectedEndDate',
+      label: 'End Date',
+      type: 'date' as const,
+    },
   ]
 
   const columnItems = [
@@ -1211,9 +1239,13 @@ export default function ProjectsPage() {
     { field: 'dates', label: 'Start / End Date', visible: columnVisibility.dates },
   ]
 
-  const activeFilterCount = [filters.status, filters.type, filters.projectManager].filter(
-    Boolean
-  ).length
+  const activeFilterCount = [
+    filters.status,
+    filters.type,
+    filters.projectManager,
+    filters.expectedStartDate,
+    filters.expectedEndDate,
+  ].filter(Boolean).length
 
   // ── Handlers ─────────────────────────────────────────────────────────────
 
@@ -1231,6 +1263,8 @@ export default function ProjectsPage() {
         status: (vals.status as string) ?? '',
         type: (vals.type as string) ?? '',
         projectManager: (vals.projectManager as string) ?? '',
+        expectedStartDate: (vals.expectedStartDate as string) ?? '',
+        expectedEndDate: (vals.expectedEndDate as string) ?? '',
       })
     )
   }
@@ -1323,6 +1357,7 @@ export default function ProjectsPage() {
       }
       toast.success(`Status changed to ${statusName}`)
       setStatusDialogProject(null)
+      refreshProjectSummary()
     } catch {
       toast.error('Failed to change status')
     }
@@ -1342,6 +1377,7 @@ export default function ProjectsPage() {
             : 'Project cancelled',
       )
       setLifecycleConfirm(null)
+      refreshProjectSummary()
     } catch {
       toast.error(
         status === 'Archived'
@@ -1384,6 +1420,8 @@ export default function ProjectsPage() {
           status: filters.status,
           type: filters.type,
           projectManager: filters.projectManager,
+          expectedStartDate: filters.expectedStartDate,
+          expectedEndDate: filters.expectedEndDate,
         }}
         onFilterChange={handleFilterChange}
         onFilterReset={handleFilterReset}
@@ -1406,6 +1444,7 @@ export default function ProjectsPage() {
             canView={canViewProject}
             canEdit={canEditProject}
             canDelete={canDeleteProject}
+            showChangeStatus={activeTab !== 'all'}
             onView={handleView}
             onEdit={handleEdit}
             onChangeStatus={(p) => setStatusDialogProject(p)}
@@ -1441,6 +1480,7 @@ export default function ProjectsPage() {
             }}
             statusDateField={statusDateConfig.field}
             statusDateLabel={statusDateConfig.label}
+            showChangeStatus={activeTab !== 'all'}
             onView={handleView}
             onEdit={handleEdit}
             onChangeStatus={(p) => setStatusDialogProject(p)}

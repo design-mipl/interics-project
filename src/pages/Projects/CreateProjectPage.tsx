@@ -11,15 +11,12 @@ import {
   FormControl,
   Button as MuiButton,
   Divider,
-  Collapse,
-  CircularProgress,
 } from '@mui/material'
-import { Add, PersonOutline, Check } from '@mui/icons-material'
+import { Add, PersonOutline } from '@mui/icons-material'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppSelector } from '../../store/hooks'
 import {
   fetchCustomers,
-  createCustomer,
   createCustomerContact,
   fetchCustomerById,
 } from '../../slices/customers/thunk'
@@ -29,20 +26,18 @@ import { usersApi } from '../../api/usersApi'
 import { unwrapApiData } from '@/modules/system-settings/shared/api'
 import { normalizeArrayResponse } from '@/utils/normalizeListResponse'
 import { createVendorContact, fetchVendorById, fetchVendors } from '../../slices/vendors/thunk'
+import type { Vendor } from '../../slices/vendors/reducer'
 import { isProjectLeadRole, PROJECT_LEAD_ROLE_KEY } from './projectManagerRoles'
 import { ContactPersonAutocomplete } from './components/ContactPersonAutocomplete'
 import {
   AddNewPersonModal,
   type NewPersonForm,
-  VendorSelectField,
   type VendorOption as VendorSelectOption,
 } from './components/CreateContactPersonModal'
+import { VendorSelectFieldMulti } from './components/VendorSelectFieldMulti'
+import { CustomerDrawer } from '../Customers/CustomerDrawer'
 import { QuickAddVendorModal } from './components/QuickAddVendorModal'
-import {
-  isValidIndianMobileDigits,
-  MOBILE_VALIDATION_MESSAGE,
-  sanitizeMobileInput,
-} from '@/utils/mobile'
+import { sanitizeMobileInput } from '@/utils/mobile'
 import {
   ProjectDetailsFields,
   ProjectSetupFields,
@@ -64,7 +59,6 @@ import {
   getDefaultContactIds,
   getVendorContactsForProjectCreate,
   isPersistedContactId,
-  vendorSelectionAfterChange,
   findContactsByIds,
   clientTeamFromContacts,
   buildProjectDocumentsFromForm,
@@ -81,8 +75,9 @@ interface WizardFormData {
   customerId: string
   customerName: string
   contactIds: string[]
-  // Step 1 — Vendor (optional)
+  // Step 1 — Vendor (optional, multi)
   vendorId: string
+  vendorIds: string[]
   vendorContactIds: string[]
   // Step 2 — Project Setup
   name: string
@@ -216,30 +211,19 @@ function Step1Customer({
 }) {
   const dispatch = useAppDispatch()
   const toast = useToast()
-  const sectors = useAppSelector((s) => s.settings.sectors)
-  const activeSectors = sectors.filter((s) => s.status === 'active')
 
   const [addPersonOpen, setAddPersonOpen] = useState(false)
   const [addVendorPersonOpen, setAddVendorPersonOpen] = useState(false)
   const [addVendorOpen, setAddVendorOpen] = useState(false)
   const [showInlineCustomer, setShowInlineCustomer] = useState(false)
-  const [savingCustomer, setSavingCustomer] = useState(false)
-  const [newCustomerData, setNewCustomerData] = useState({
-    name: '',
-    sector: '',
-    contactPerson: '',
-    phone: '',
-    email: '',
-    city: '',
-    state: '',
-  })
-  const [customerPhoneInputMeta, setCustomerPhoneInputMeta] = useState({
-    hasNonDigitChars: false,
-    hasTooManyDigits: false,
-  })
+  const [vendorDetailsById, setVendorDetailsById] = useState<Record<string, Vendor>>({})
 
+  const selectedCustomerDetail = useAppSelector((s) => s.customers.selectedItem)
+  // Prefer detail/selectedItem contacts when they match the form selection — list DTOs omit contact UUIDs.
   const selectedCustomer =
-    customers.find((c) => c.id === formData.customerId) ?? null
+    (selectedCustomerDetail?.id === formData.customerId ? selectedCustomerDetail : null) ??
+    customers.find((c) => c.id === formData.customerId) ??
+    null
   // Only real contact UUIDs from customer detail — never legacy list placeholders.
   const customerContacts = useMemo(
     () => normalizeContacts(selectedCustomer?.contacts ?? []),
@@ -253,24 +237,39 @@ function Step1Customer({
   const vendors = useAppSelector((s) => s.vendors.items ?? [])
   const vendorsLoading = useAppSelector((s) => s.vendors.loading)
   const vendorDetail = useAppSelector((s) => s.vendors.selectedItem)
-  const selectedVendor = useMemo(() => {
-    const fromList = vendors.find((v) => v.id === formData.vendorId) ?? null
-    if (vendorDetail?.id === formData.vendorId) {
-      return {
-        ...(fromList ?? vendorDetail),
-        ...vendorDetail,
-        // Prefer detail contacts (real VendorContact rows) over list-row shape.
-        contacts: vendorDetail.contacts?.length
-          ? vendorDetail.contacts
-          : fromList?.contacts,
+
+  useEffect(() => {
+    for (const vendorId of formData.vendorIds) {
+      if (vendorDetailsById[vendorId]) continue
+      void dispatch(fetchVendorById(vendorId))
+        .unwrap()
+        .then((detail) => {
+          setVendorDetailsById((prev) => ({ ...prev, [vendorId]: detail }))
+        })
+        .catch(() => undefined)
+    }
+  }, [dispatch, formData.vendorIds, vendorDetailsById])
+
+  useEffect(() => {
+    if (vendorDetail?.id && formData.vendorIds.includes(vendorDetail.id)) {
+      setVendorDetailsById((prev) => ({ ...prev, [vendorDetail.id]: vendorDetail }))
+    }
+  }, [vendorDetail, formData.vendorIds])
+
+  const vendorContacts = useMemo(() => {
+    const byId = new Map<string, ReturnType<typeof getVendorContactsForProjectCreate>[number]>()
+    for (const vendorId of formData.vendorIds) {
+      const detail =
+        vendorDetailsById[vendorId] ??
+        (vendorDetail?.id === vendorId ? vendorDetail : undefined) ??
+        vendors.find((v) => v.id === vendorId)
+      for (const contact of getVendorContactsForProjectCreate(detail)) {
+        byId.set(contact.id, contact)
       }
     }
-    return fromList
-  }, [vendors, formData.vendorId, vendorDetail])
-  const vendorContacts = useMemo(
-    () => getVendorContactsForProjectCreate(selectedVendor),
-    [selectedVendor],
-  )
+    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }, [formData.vendorIds, vendorDetailsById, vendorDetail, vendors])
+
   const selectedVendorContacts = useMemo(
     () => vendorContacts.filter((c) => formData.vendorContactIds.includes(c.id)),
     [vendorContacts, formData.vendorContactIds],
@@ -287,50 +286,11 @@ function Step1Customer({
     [vendors],
   )
 
-  async function handleCreateCustomer() {
-    const sanitizedPhone = sanitizeMobileInput(newCustomerData.phone)
-    if (!newCustomerData.name || !newCustomerData.contactPerson || !sanitizedPhone) {
-      toast.error('Please fill in company name, contact person, and phone')
-      return
-    }
-    if (customerPhoneInputMeta.hasTooManyDigits) {
-      toast.error('Mobile number must be exactly 10 digits')
-      return
-    }
-    if (customerPhoneInputMeta.hasNonDigitChars) {
-      toast.error('Mobile number must contain numeric characters only')
-      return
-    }
-    if (!isValidIndianMobileDigits(sanitizedPhone)) {
-      toast.error(MOBILE_VALIDATION_MESSAGE)
-      return
-    }
-    if (!newCustomerData.sector?.trim()) {
-      toast.error('Sector is required')
-      return
-    }
+  async function handleCustomerCreated(created: { id: string; name: string }) {
     try {
-      setSavingCustomer(true)
-      const created = await dispatch(
-        createCustomer({
-          name: newCustomerData.name,
-          sector: newCustomerData.sector.trim(),
-          contactPerson: newCustomerData.contactPerson,
-          designation: '',
-          phone: sanitizedPhone,
-          email: newCustomerData.email || '',
-          city: newCustomerData.city || '',
-          state: newCustomerData.state || '',
-          gstStatus: 'Unregistered',
-          gstin: '',
-          pan: '',
-          address: '',
-          pincode: '',
-          tags: [],
-          notes: '',
-        }),
-      ).unwrap()
       const full = await dispatch(fetchCustomerById(created.id)).unwrap()
+      // Refresh list for Autocomplete options, but do not await in a way that blocks
+      // contact UI — reducer preserves contacts for the selected/detail customer.
       void dispatch(fetchCustomers({}))
       const contacts = getContactsForCustomer(full)
       setFormData((prev) => ({
@@ -340,27 +300,9 @@ function Step1Customer({
         contactIds: getDefaultContactIds(contacts),
       }))
       setShowInlineCustomer(false)
-      setNewCustomerData({
-        name: '',
-        sector: '',
-        contactPerson: '',
-        phone: '',
-        email: '',
-        city: '',
-        state: '',
-      })
-      setCustomerPhoneInputMeta({ hasNonDigitChars: false, hasTooManyDigits: false })
       toast.success('Customer created')
-    } catch (err: unknown) {
-      const message =
-        typeof err === 'string'
-          ? err
-          : err && typeof err === 'object' && 'message' in err && typeof err.message === 'string'
-            ? err.message
-            : 'Failed to create customer'
-      toast.error(message)
-    } finally {
-      setSavingCustomer(false)
+    } catch {
+      toast.error('Customer created but failed to load details')
     }
   }
 
@@ -444,52 +386,57 @@ function Step1Customer({
       </FormField>
 
       <Box>
-        <VendorSelectField
-          value={formData.vendorId}
+        <VendorSelectFieldMulti
+          value={formData.vendorIds}
           options={vendorOptions}
           loading={vendorsLoading}
           error={errors.vendorId}
           onAddNewVendor={() => setAddVendorOpen(true)}
-          onChange={(vendorId) => {
-            if (!vendorId) {
-              setFormData((prev) => ({
+          onChange={(vendorIds) => {
+            const uniqueIds = [...new Set(vendorIds.filter(Boolean))]
+            setFormData((prev) => {
+              const allowedContactIds = new Set(
+                uniqueIds.flatMap((id) => {
+                  const detail =
+                    vendorDetailsById[id] ??
+                    (vendorDetail?.id === id ? vendorDetail : undefined) ??
+                    vendors.find((v) => v.id === id)
+                  return getVendorContactsForProjectCreate(detail).map((c) => c.id)
+                }),
+              )
+              return {
                 ...prev,
-                vendorId: '',
-                vendorContactIds: [],
-              }))
-              setErrors((prev) => ({ ...prev, vendorId: undefined, vendorContactId: undefined }))
-              return
-            }
-
-            setFormData((prev) => ({
-              ...prev,
-              vendorId,
-              vendorContactIds: [],
-            }))
+                vendorIds: uniqueIds,
+                vendorId: uniqueIds[0] ?? '',
+                vendorContactIds: prev.vendorContactIds.filter((id) => allowedContactIds.has(id)),
+              }
+            })
             setErrors((prev) => ({ ...prev, vendorId: undefined, vendorContactId: undefined }))
-
-            void dispatch(fetchVendorById(vendorId))
-              .unwrap()
-              .then((detail) => {
-                const contacts = getVendorContactsForProjectCreate(detail)
-                setFormData((prev) => ({
-                  ...prev,
-                  ...vendorSelectionAfterChange(detail.id, contacts),
-                }))
-              })
-              .catch(() => {
-                toast.error('Failed to load vendor contacts')
-              })
+            for (const vendorId of uniqueIds) {
+              if (vendorDetailsById[vendorId]) continue
+              void dispatch(fetchVendorById(vendorId))
+                .unwrap()
+                .then((detail) => {
+                  setVendorDetailsById((prev) => ({ ...prev, [vendorId]: detail }))
+                })
+                .catch(() => {
+                  toast.error('Failed to load vendor contacts')
+                })
+            }
           }}
         />
       </Box>
 
       <FormField label="Vendor Contact Person" error={errors.vendorContactId}>
         <ContactPersonAutocomplete
-          contacts={formData.vendorId ? vendorContacts : []}
-          value={formData.vendorId ? selectedVendorContacts : []}
+          contacts={formData.vendorIds.length > 0 ? vendorContacts : []}
+          value={formData.vendorIds.length > 0 ? selectedVendorContacts : []}
           error={errors.vendorContactId}
-          placeholder={formData.vendorId ? 'Search vendor contacts…' : 'Select a vendor first…'}
+          placeholder={
+            formData.vendorIds.length > 0
+              ? 'Search vendor contacts…'
+              : 'Select a vendor first…'
+          }
           onChange={(val) => {
             setFormData((prev) => ({
               ...prev,
@@ -498,25 +445,23 @@ function Step1Customer({
             setErrors((prev) => ({ ...prev, vendorContactId: undefined }))
           }}
           onCreateClick={
-            formData.vendorId ? () => setAddVendorPersonOpen(true) : undefined
+            formData.vendorIds.length > 0 ? () => setAddVendorPersonOpen(true) : undefined
           }
         />
       </FormField>
 
       <Box sx={{ gridColumn: '1 / -1' }}>
         <Divider sx={{ my: 2 }} />
-        <Box display="flex" flexWrap="wrap" gap={1}>
-          {!showInlineCustomer ? (
-            <MuiButton
-              variant="outlined"
-              size="small"
-              startIcon={<Add />}
-              sx={{ fontSize: 13 }}
-              onClick={() => setShowInlineCustomer(true)}
-            >
-              Create New Customer
-            </MuiButton>
-          ) : null}
+                <Box display="flex" flexWrap="wrap" gap={1}>
+          <MuiButton
+            variant="outlined"
+            size="small"
+            startIcon={<Add />}
+            sx={{ fontSize: 13 }}
+            onClick={() => setShowInlineCustomer(true)}
+          >
+            Create New Customer
+          </MuiButton>
           <MuiButton
             variant="outlined"
             size="small"
@@ -527,155 +472,17 @@ function Step1Customer({
             Create New Vendor
           </MuiButton>
         </Box>
-
-        <Collapse in={showInlineCustomer}>
-          <Box
-            sx={{
-              mt: showInlineCustomer ? 0 : 2,
-              p: 2,
-              border: '1px solid',
-              borderColor: 'divider',
-              borderRadius: '10px',
-              bgcolor: 'background.default',
-              boxShadow: tokens.shadow.sm,
-            }}
-          >
-            <Typography variant="subtitle2" fontWeight={600} sx={{ mb: 2 }}>
-              New Customer Details
-            </Typography>
-
-            <Box display="grid" sx={{ gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1.5 }}>
-              <Box>
-                <Typography variant="caption" sx={{ fontWeight: 500, display: 'block', mb: '4px', fontSize: 12 }}>
-                  Company Name
-                </Typography>
-                <TextField
-                  fullWidth
-                  size="small"
-                  value={newCustomerData.name}
-                  onChange={(e) => setNewCustomerData((prev) => ({ ...prev, name: e.target.value }))}
-                  placeholder="e.g. Acme Corp"
-                />
-              </Box>
-              <Box>
-                <Typography variant="caption" sx={{ fontWeight: 500, display: 'block', mb: '4px', fontSize: 12 }}>
-                  Sector <Box component="span" sx={{ color: 'error.main' }}>*</Box>
-                </Typography>
-                <FormControl fullWidth size="small">
-                  <MuiSelect
-                    value={newCustomerData.sector}
-                    displayEmpty
-                    onChange={(e) => setNewCustomerData((prev) => ({ ...prev, sector: e.target.value }))}
-                  >
-                    <MenuItem value="" disabled>
-                      Select sector…
-                    </MenuItem>
-                    {activeSectors.map((s) => (
-                      <MenuItem key={s.id} value={s.name}>
-                        {s.name}
-                      </MenuItem>
-                    ))}
-                  </MuiSelect>
-                </FormControl>
-              </Box>
-              <Box>
-                <Typography variant="caption" sx={{ fontWeight: 500, display: 'block', mb: '4px', fontSize: 12 }}>
-                  Contact Person
-                </Typography>
-                <TextField
-                  fullWidth
-                  size="small"
-                  value={newCustomerData.contactPerson}
-                  onChange={(e) => setNewCustomerData((prev) => ({ ...prev, contactPerson: e.target.value }))}
-                  placeholder="Full name"
-                />
-              </Box>
-              <Box>
-                <Typography variant="caption" sx={{ fontWeight: 500, display: 'block', mb: '4px', fontSize: 12 }}>
-                  Phone
-                </Typography>
-                <TextField
-                  fullWidth
-                  size="small"
-                  value={newCustomerData.phone}
-                  onChange={(e) => {
-                    const raw = e.target.value
-                    const rawDigits = raw.replace(/\D/g, '')
-                    const hasNonDigitChars = raw.trim().length > 0 && /[^0-9]/.test(raw)
-                    const hasTooManyDigits = rawDigits.length > 10
-
-                    setCustomerPhoneInputMeta({
-                      hasNonDigitChars,
-                      hasTooManyDigits,
-                    })
-                    setNewCustomerData((prev) => ({
-                      ...prev,
-                      phone: sanitizeMobileInput(raw),
-                    }))
-                  }}
-                  placeholder="+91 98765 43210"
-                />
-              </Box>
-              <Box>
-                <Typography variant="caption" sx={{ fontWeight: 500, display: 'block', mb: '4px', fontSize: 12 }}>
-                  Email
-                </Typography>
-                <TextField
-                  fullWidth
-                  size="small"
-                  value={newCustomerData.email}
-                  onChange={(e) => setNewCustomerData((prev) => ({ ...prev, email: e.target.value }))}
-                  placeholder="name@company.com"
-                />
-              </Box>
-              <Box>
-                <Typography variant="caption" sx={{ fontWeight: 500, display: 'block', mb: '4px', fontSize: 12 }}>
-                  City
-                </Typography>
-                <TextField
-                  fullWidth
-                  size="small"
-                  value={newCustomerData.city}
-                  onChange={(e) => setNewCustomerData((prev) => ({ ...prev, city: e.target.value }))}
-                  placeholder="City"
-                />
-              </Box>
-            </Box>
-
-            <Box display="flex" justifyContent="flex-end" gap={1} sx={{ mt: 2 }}>
-              <MuiButton
-                size="small"
-                variant="outlined"
-                onClick={() => {
-                  setShowInlineCustomer(false)
-                  setNewCustomerData({
-                    name: '',
-                    sector: '',
-                    contactPerson: '',
-                    phone: '',
-                    email: '',
-                    city: '',
-                    state: '',
-                  })
-                  setCustomerPhoneInputMeta({ hasNonDigitChars: false, hasTooManyDigits: false })
-                }}
-              >
-                Cancel
-              </MuiButton>
-              <MuiButton
-                size="small"
-                variant="contained"
-                onClick={() => void handleCreateCustomer()}
-                disabled={savingCustomer}
-                endIcon={savingCustomer ? <CircularProgress size={12} /> : <Check fontSize="small" />}
-              >
-                Save Customer
-              </MuiButton>
-            </Box>
-          </Box>
-        </Collapse>
       </Box>
     </FullPageFormSection>
+
+    <CustomerDrawer
+      open={showInlineCustomer}
+      onClose={() => setShowInlineCustomer(false)}
+      mode="add"
+      onSuccess={(customer) => {
+        void handleCustomerCreated(customer)
+      }}
+    />
 
     <AddNewPersonModal
       open={addPersonOpen}
@@ -736,7 +543,11 @@ function Step1Customer({
       existingVendorPhones={existingVendorPhones}
       isVendor={true}
       onSave={async (person: NewPersonForm) => {
-        const vendorId = formData.vendorId
+        // Prefer last selected vendor (most recently added), else first.
+        const vendorId =
+          formData.vendorIds[formData.vendorIds.length - 1] ??
+          formData.vendorIds[0] ??
+          ''
         if (!vendorId) return false
 
         try {
@@ -757,12 +568,20 @@ function Step1Customer({
 
           // Refresh this vendor's contacts into list+selectedItem (do not replace
           // the whole list first — that would drop contacts from list rows).
-          await dispatch(fetchVendorById(vendorId)).unwrap()
+          const detail = await dispatch(fetchVendorById(vendorId)).unwrap()
+          setVendorDetailsById((prev) => ({ ...prev, [vendorId]: detail }))
 
           setFormData((prev) => ({
             ...prev,
-            vendorId,
-            vendorContactIds: [...new Set([...prev.vendorContactIds, result.contact.id].filter(isPersistedContactId))],
+            vendorIds: prev.vendorIds.includes(vendorId)
+              ? prev.vendorIds
+              : [...prev.vendorIds, vendorId],
+            vendorId: prev.vendorIds[0] ?? vendorId,
+            vendorContactIds: [
+              ...new Set(
+                [...prev.vendorContactIds, result.contact.id].filter(isPersistedContactId),
+              ),
+            ],
           }))
           setErrors((prev) => ({ ...prev, vendorContactId: undefined }))
           setAddVendorPersonOpen(false)
@@ -785,21 +604,31 @@ function Step1Customer({
       onClose={() => setAddVendorOpen(false)}
       onCreated={(vendor) => {
         const createdVendorId = vendor.id
-        setFormData((prev) => ({
-          ...prev,
-          vendorId: createdVendorId,
-          vendorContactIds: [],
-        }))
+        setFormData((prev) => {
+          const vendorIds = [...new Set([...prev.vendorIds, createdVendorId])]
+          return {
+            ...prev,
+            vendorIds,
+            vendorId: vendorIds[0] ?? '',
+            // Keep existing vendor contacts; do not clear on add.
+          }
+        })
         setErrors((prev) => ({ ...prev, vendorId: undefined, vendorContactId: undefined }))
         setAddVendorOpen(false)
 
         void dispatch(fetchVendorById(createdVendorId))
           .unwrap()
           .then((detail) => {
-            const contacts = getVendorContactsForProjectCreate(detail)
+            setVendorDetailsById((prev) => ({ ...prev, [createdVendorId]: detail }))
+            const defaultIds = getDefaultContactIds(getVendorContactsForProjectCreate(detail))
+            if (defaultIds.length === 0) return
             setFormData((prev) => ({
               ...prev,
-              ...vendorSelectionAfterChange(detail.id, contacts),
+              vendorContactIds: [
+                ...new Set(
+                  [...prev.vendorContactIds, ...defaultIds].filter(isPersistedContactId),
+                ),
+              ],
             }))
           })
           .catch(() => {
@@ -1122,6 +951,7 @@ const INITIAL_FORM: WizardFormData = {
   customerName: '',
   contactIds: [],
   vendorId: '',
+  vendorIds: [],
   vendorContactIds: [],
   name: '',
   projectTypes: [],
@@ -1244,7 +1074,7 @@ export default function CreateProjectPage() {
         newErrors.contactId = 'Please select at least one contact person'
       }
       // Vendor + vendor contacts are optional; contacts without a vendor are invalid.
-      if (!formData.vendorId?.trim() && formData.vendorContactIds.length > 0) {
+      if (formData.vendorIds.length === 0 && formData.vendorContactIds.length > 0) {
         newErrors.vendorId = 'Vendor is required when vendor contacts are selected'
       }
     }
@@ -1287,7 +1117,8 @@ export default function CreateProjectPage() {
       customerId: formData.customerId,
       customerName: formData.customerName,
       contactIds: formData.contactIds,
-      vendorId: formData.vendorId,
+      vendorIds: formData.vendorIds,
+      vendorId: formData.vendorIds[0] ?? formData.vendorId,
       vendorContactIds: formData.vendorContactIds,
       name: formData.name,
       location,

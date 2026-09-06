@@ -28,17 +28,19 @@ import {
   createVendorContact,
   updateVendorContact,
   fetchVendors,
+  fetchVendorById,
 } from '@/slices/vendors/thunk'
 import type { Contact } from '@/slices/customers/reducer'
 import type { ContactInfo } from '@/slices/projects/reducer'
 import type { Vendor } from '@/slices/vendors/reducer'
 import { Button, Modal, useToast } from '@/design-system/components'
 import { DrawerForm } from '@/components/templates'
-import { getVendorContactsList } from '@/utils/vendorContacts'
+import { getVendorContactsList, normalizeVendorContactsForSelect } from '@/utils/vendorContacts'
 import { isActiveVendorContact, isPendingVendor } from '@/utils/vendorProfileStatus'
 import {
   contactPhoneExists,
   normalizePhoneNumber,
+  isPersistedContactId,
   type ProjectContactSource,
 } from '../projectCreateHelpers'
 import {
@@ -154,6 +156,13 @@ function mergeContactsById(base: Contact[], extras: Contact[]): Contact[] {
   return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name))
 }
 
+/** Vendor dropdown options: id-dedupe + drop legacy-primary when real contacts exist. */
+function mergeVendorContactsForSelect(base: Contact[], extras: Contact[]): Contact[] {
+  return normalizeVendorContactsForSelect(mergeContactsById(base, extras)).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  )
+}
+
 function validateForm(
   form: FormState,
   existingCustomerContacts: Contact[],
@@ -261,13 +270,16 @@ export function CreateContactPersonModal({
   )
 
   const existingVendorContacts = useMemo(
-    () => (selectedVendor ? getVendorContactsList(selectedVendor) : []),
+    () =>
+      selectedVendor
+        ? normalizeVendorContactsForSelect(getVendorContactsList(selectedVendor))
+        : [],
     [selectedVendor],
   )
 
   const selectableContacts = useMemo(() => {
     if (form.contactType === 'vendor') {
-      return mergeContactsById(existingVendorContacts, localVendorContacts)
+      return mergeVendorContactsForSelect(existingVendorContacts, localVendorContacts)
     }
     return mergeContactsById(existingCustomerContacts, localCustomerContacts)
   }, [
@@ -382,8 +394,18 @@ export function CreateContactPersonModal({
     )
   }
 
+  async function loadVendorDetail(vendorId: string): Promise<Vendor | null> {
+    try {
+      return await dispatch(fetchVendorById(vendorId)).unwrap()
+    } catch {
+      return null
+    }
+  }
+
   function selectVendorAndPrimaryContact(vendor: Vendor) {
-    const contacts = getVendorContactsList(vendor)
+    const contacts = normalizeVendorContactsForSelect(getVendorContactsList(vendor)).filter((c) =>
+      isPersistedContactId(c.id),
+    )
     const primary = contacts.find((c) => c.isPrimary) ?? contacts[0] ?? null
 
     setForm((prev) => ({
@@ -394,7 +416,9 @@ export function CreateContactPersonModal({
         ? { selectedContactId: primary.id, ...contactDetailsFrom(primary) }
         : clearContactDetails()),
     }))
-    setLocalVendorContacts(primary ? [primary] : [])
+    // Contacts already live on the vendor — do not mirror into local extras
+    // (avoids duplicating with legacy-primary after a list refresh).
+    setLocalVendorContacts([])
     setErrors({})
   }
 
@@ -457,8 +481,15 @@ export function CreateContactPersonModal({
             },
           }),
         ).unwrap()
-        setLocalVendorContacts((prev) => mergeContactsById(prev, [result.contact]))
-        await refreshVendors()
+        // Prefer detail reload over list refresh so contacts[] stays authoritative.
+        const detail = await loadVendorDetail(vendor.id)
+        if (detail) {
+          setLocalVendorContacts([])
+        } else {
+          setLocalVendorContacts((prev) =>
+            mergeVendorContactsForSelect(prev, [result.contact]),
+          )
+        }
         applySelectedContact(result.contact)
       }
 
@@ -478,7 +509,7 @@ export function CreateContactPersonModal({
       existingCustomerContacts,
       localCustomerContacts,
     )
-    const allVendorPeers = mergeContactsById(
+    const allVendorPeers = mergeVendorContactsForSelect(
       existingVendorContacts,
       localVendorContacts,
     )
@@ -540,10 +571,12 @@ export function CreateContactPersonModal({
 
         onSaved?.(contact)
         assigned = {
+          id: contact.id,
           name: contact.name,
           phone: contact.phone,
           email: contact.email,
           designation: contact.designation,
+          source: 'customer',
         }
       } else {
         const vendor = selectedVendor
@@ -552,48 +585,77 @@ export function CreateContactPersonModal({
           return
         }
 
-        let contact: Contact
+        // Authoritative vendor contacts — list rows can be stale right after QuickAdd.
+        const detail = (await loadVendorDetail(vendor.id)) ?? vendor
+        const vendorContacts = mergeVendorContactsForSelect(
+          normalizeVendorContactsForSelect(getVendorContactsList(detail)),
+          localVendorContacts,
+        ).filter((c) => isPersistedContactId(c.id))
 
-        if (selectedContact) {
-          // Legacy primary from vendor create cannot be patched via contact API.
-          if (
-            selectedContact.id !== 'legacy-primary' &&
-            detailsChangedFromOriginal(selectedContact)
-          ) {
-            const result = await dispatch(
-              updateVendorContact({
-                vendorId: vendor.id,
-                contactId: selectedContact.id,
-                data: {
-                  phone: payload.phone,
-                  email: payload.email,
-                  designation: payload.designation,
-                },
-              }),
-            ).unwrap()
-            contact = result.contact
-          } else {
-            contact = {
-              ...selectedContact,
-              phone: payload.phone,
-              email: payload.email,
-              designation: payload.designation,
-            }
-          }
-        } else {
+        let contact: Contact | null =
+          vendorContacts.find((c) => c.id === form.selectedContactId) ?? null
+
+        if (!contact && selectedContact && isPersistedContactId(selectedContact.id)) {
+          contact = vendorContacts.find((c) => c.id === selectedContact.id) ?? null
+        }
+
+        if (!contact && form.phone.trim()) {
+          const phoneKey = normalizePhoneNumber(form.phone)
+          contact =
+            vendorContacts.find(
+              (c) => normalizePhoneNumber(c.phone) === phoneKey && phoneKey.length > 0,
+            ) ?? null
+        }
+
+        if (!contact) {
           setErrors((prev) => ({
             ...prev,
-            selectedContactId: 'Select a contact person',
+            selectedContactId:
+              'Selected contact is not available for this vendor yet. Re-select the contact and try again.',
+            vendor: 'Vendor contacts may still be loading. Re-select the vendor if needed.',
+          }))
+          return
+        }
+
+        if (contact.id !== 'legacy-primary' && detailsChangedFromOriginal(contact)) {
+          const result = await dispatch(
+            updateVendorContact({
+              vendorId: detail.id,
+              contactId: contact.id,
+              data: {
+                phone: payload.phone,
+                email: payload.email,
+                designation: payload.designation,
+              },
+            }),
+          ).unwrap()
+          contact = result.contact
+        } else {
+          contact = {
+            ...contact,
+            phone: payload.phone,
+            email: payload.email,
+            designation: payload.designation,
+          }
+        }
+
+        if (!isPersistedContactId(contact.id)) {
+          setErrors((prev) => ({
+            ...prev,
+            selectedContactId: 'Select a saved vendor contact before assigning to the project.',
           }))
           return
         }
 
         assigned = {
+          id: contact.id,
           name: contact.name,
           phone: contact.phone,
           email: contact.email,
           designation: contact.designation,
-          company: vendor.name,
+          company: detail.name,
+          source: 'vendor',
+          vendorId: detail.id,
         }
       }
 
@@ -625,6 +687,7 @@ export function CreateContactPersonModal({
         cancelLabel="Cancel"
         submitLoading={saving}
         width={480}
+        disableEnforceFocus={addVendorOpen || addPersonOpen}
       >
         <Box display="flex" flexDirection="column" gap={1.5}>
           <SelectField
@@ -709,9 +772,13 @@ export function CreateContactPersonModal({
         open={addVendorOpen}
         onClose={() => setAddVendorOpen(false)}
         onCreated={(vendor) => {
-          selectVendorAndPrimaryContact(vendor)
-          void refreshVendors()
-          setAddVendorOpen(false)
+          void (async () => {
+            await refreshVendors()
+            // Detail merge restores real contact UUIDs after list refresh drops contacts[].
+            const detail = (await loadVendorDetail(vendor.id)) ?? vendor
+            selectVendorAndPrimaryContact(detail)
+            setAddVendorOpen(false)
+          })()
         }}
       />
     </>
@@ -1058,6 +1125,12 @@ export function VendorSelectField({
 }) {
   const selectedLabel = options.find((opt) => opt.id === value)?.label
 
+  function openAddNewVendor() {
+    // Defer so the Select menu can close before the create-vendor UI opens
+    // (same QuickAddVendorModal path as Create Project).
+    queueMicrotask(() => onAddNewVendor?.())
+  }
+
   return (
     <Box>
       <FieldLabel label="Vendor" required={required} />
@@ -1069,13 +1142,13 @@ export function VendorSelectField({
           onChange={(e) => {
             const next = e.target.value
             if (next === ADD_VENDOR_VALUE) {
-              onAddNewVendor?.()
+              openAddNewVendor()
               return
             }
             onChange(next)
           }}
           renderValue={(selected) => {
-            if (!selected) {
+            if (!selected || selected === ADD_VENDOR_VALUE) {
               return (
                 <Box component="span" sx={{ color: 'text.secondary', fontSize: 13 }}>
                   {loading ? 'Loading vendors…' : 'Select vendor…'}
@@ -1095,41 +1168,54 @@ export function VendorSelectField({
             },
           }}
         >
-          {options.length === 0 ? (
-            <MenuItem disabled sx={{ fontSize: 13 }}>
-              {loading ? 'Loading…' : 'No vendors found'}
-            </MenuItem>
-          ) : (
-            [
-              !required ? (
-                <MenuItem key="__none__" value="" sx={{ fontSize: 13, color: 'text.secondary' }}>
-                  No vendor
-                </MenuItem>
-              ) : null,
-              ...options.map((opt) => (
-                <MenuItem key={opt.id} value={opt.id} sx={{ fontSize: 13 }}>
-                  {opt.label}
-                </MenuItem>
-              )),
-            ]
-          )}
-          {onAddNewVendor ? (
-            <>
-              <ListSubheader sx={{ lineHeight: '8px', height: 8, p: 0 }}>
-                <Divider />
-              </ListSubheader>
-              <MenuItem
-                value={ADD_VENDOR_VALUE}
-                sx={{
-                  fontSize: 13,
-                  fontWeight: 600,
-                  color: 'primary.main',
-                }}
-              >
-                + Add New Vendor
-              </MenuItem>
-            </>
-          ) : null}
+          {[
+            ...(options.length === 0
+              ? [
+                  <MenuItem key="__empty__" disabled sx={{ fontSize: 13 }}>
+                    {loading ? 'Loading…' : 'No vendors found'}
+                  </MenuItem>,
+                ]
+              : [
+                  ...(!required
+                    ? [
+                        <MenuItem
+                          key="__none__"
+                          value=""
+                          sx={{ fontSize: 13, color: 'text.secondary' }}
+                        >
+                          No vendor
+                        </MenuItem>,
+                      ]
+                    : []),
+                  ...options.map((opt) => (
+                    <MenuItem key={opt.id} value={opt.id} sx={{ fontSize: 13 }}>
+                      {opt.label}
+                    </MenuItem>
+                  )),
+                ]),
+            ...(onAddNewVendor
+              ? [
+                  <ListSubheader key="__add_vendor_divider__" sx={{ lineHeight: '8px', height: 8, p: 0 }}>
+                    <Divider />
+                  </ListSubheader>,
+                  <MenuItem
+                    key="__add_new_vendor__"
+                    value={ADD_VENDOR_VALUE}
+                    onClick={(e) => {
+                      e.preventDefault()
+                      openAddNewVendor()
+                    }}
+                    sx={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: 'primary.main',
+                    }}
+                  >
+                    + Add New Vendor
+                  </MenuItem>,
+                ]
+              : []),
+          ]}
         </MuiSelect>
         {error ? (
           <Box component="span" sx={{ fontSize: 11, color: 'error.main', mt: 0.5 }}>

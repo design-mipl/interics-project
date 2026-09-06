@@ -112,6 +112,11 @@ export function ProjectDetailsSections({ project }: ProjectDetailsSectionsProps)
                 {project.projectCode}
               </Typography>
             </LabelValue>
+            <LabelValue label="Client">
+              <Typography variant="body2" sx={METADATA_BODY_SX}>
+                {project.customerName?.trim() || '—'}
+              </Typography>
+            </LabelValue>
             <LabelValue label="Location">
               <Typography variant="body2" sx={METADATA_BODY_SX}>
                 {formatBuildingFloor(project)}

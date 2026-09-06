@@ -38,7 +38,6 @@ import {
   IndianRupee,
   Percent,
   PlayCircle,
-  RefreshCw,
   Sparkles,
   Wallet,
   X,
@@ -81,6 +80,8 @@ import {
   dashboardDateParams,
   type DashboardDateRange,
 } from '../dashboardDateRange'
+import { useDashboardReload } from '../useDashboardReload'
+import { DashboardKpiCardSkeleton, DashboardSectionLoader } from '../DashboardTabLoader'
 
 /**
  * Project Analytics chart data is derived from the real Projects module state.
@@ -347,18 +348,6 @@ function formatProjectMoney(value: number): string {
   if (amount >= 10_000_000) return `₹${(amount / 10_000_000).toFixed(2)} Cr`
   if (amount >= 100_000) return `₹${(amount / 100_000).toFixed(1)} L`
   return `₹${amount.toLocaleString('en-IN')}`
-}
-
-function countRepeatClients(projects: Project[]): { total: number; percentage: number } {
-  const counts = new Map<string, number>()
-  for (const project of projects) {
-    const key = (project.customerId || project.customerName || '').trim().toLowerCase()
-    if (!key) continue
-    counts.set(key, (counts.get(key) ?? 0) + 1)
-  }
-  const repeatClients = Array.from(counts.values()).filter((count) => count > 1).length
-  const percentage = counts.size > 0 ? Math.round((repeatClients / counts.size) * 1000) / 10 : 0
-  return { total: repeatClients, percentage }
 }
 
 function averageProjectSize(projects: Project[]): number {
@@ -822,14 +811,12 @@ interface ProjectOverviewKpi {
   title: string
   value: string
   subtitle: string
-  percentage?: number
   icon:
     | 'active'
     | 'completed'
     | 'pipeline'
     | 'cancelled'
     | 'archived'
-    | 'repeat'
     | 'size'
     | 'conversion'
 }
@@ -871,14 +858,6 @@ const PROJECT_OVERVIEW_KPIS: ProjectOverviewKpi[] = [
     icon: 'archived',
   },
   {
-    id: 'repeat',
-    title: 'Repeat Clients',
-    value: '0',
-    subtitle: 'Clients with more than one project.',
-    percentage: 0,
-    icon: 'repeat',
-  },
-  {
     id: 'size',
     title: 'Average Project Size',
     value: '0 sqft',
@@ -904,7 +883,6 @@ const KPI_STATUS_MAP: Record<string, Project['status']> = {
 
 /** Status KPI counts from the Projects module listing (same source as ProjectsPage tabs). */
 function buildProjectOverviewKpis(projects: Project[]): ProjectOverviewKpi[] {
-  const repeatClients = countRepeatClients(projects)
   const averageSize = averageProjectSize(projects)
   const conversionDays = averagePitchToLiveDays(projects)
 
@@ -913,13 +891,6 @@ function buildProjectOverviewKpis(projects: Project[]): ProjectOverviewKpi[] {
     if (status) {
       const count = projects.filter((project) => project.status === status).length
       return { ...kpi, value: String(count) }
-    }
-    if (kpi.id === 'repeat') {
-      return {
-        ...kpi,
-        value: String(repeatClients.total),
-        percentage: repeatClients.percentage,
-      }
     }
     if (kpi.id === 'size') {
       return { ...kpi, value: `${formatCompactNumber(averageSize)} sqft` }
@@ -1786,10 +1757,6 @@ const ICON_MAP: Record<ProjectOverviewKpi['icon'], { node: ReactNode; color: str
     node: <Archive size={18} strokeWidth={1.75} />,
     color: CHART_COLORS.grey,
   },
-  repeat: {
-    node: <RefreshCw size={18} strokeWidth={1.75} />,
-    color: CHART_COLORS.purple,
-  },
   size: {
     node: <Building2 size={18} strokeWidth={1.75} />,
     color: CHART_COLORS.amber,
@@ -1803,9 +1770,11 @@ const ICON_MAP: Record<ProjectOverviewKpi['icon'], { node: ReactNode; color: str
 function ProjectOverviewKpiCard({
   kpi,
   onClick,
+  loading = false,
 }: {
   kpi: ProjectOverviewKpi
   onClick?: () => void
+  loading?: boolean
 }) {
   const theme = useTheme()
   const iconMeta = ICON_MAP[kpi.icon]
@@ -1813,7 +1782,7 @@ function ProjectOverviewKpiCard({
   return (
     <Paper
       elevation={0}
-      onClick={onClick}
+      onClick={loading ? undefined : onClick}
       sx={{
         height: '100%',
         p: 2,
@@ -1824,75 +1793,67 @@ function ProjectOverviewKpiCard({
         flexDirection: 'column',
         gap: 1,
         bgcolor: 'background.paper',
-        ...(onClick && {
-          cursor: 'pointer',
-          transition: 'border-color 0.15s, box-shadow 0.15s',
-          '&:hover': {
-            borderColor: tokens.color.primary[300],
-            boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
-          },
-        }),
+        ...(!loading &&
+          onClick && {
+            cursor: 'pointer',
+            transition: 'border-color 0.15s, box-shadow 0.15s',
+            '&:hover': {
+              borderColor: tokens.color.primary[300],
+              boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+            },
+          }),
       }}
     >
-      <Box
-        sx={{
-          display: 'flex',
-          alignItems: 'flex-start',
-          justifyContent: 'space-between',
-          gap: 1,
-        }}
-      >
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          fontWeight={600}
-          sx={{ fontSize: 11, letterSpacing: 0.3, lineHeight: 1.35, pr: 0.5 }}
-        >
-          {kpi.title}
-        </Typography>
-        <Box
-          sx={{
-            width: 34,
-            height: 34,
-            borderRadius: '8px',
-            flexShrink: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            bgcolor: alpha(iconMeta.color, theme.palette.mode === 'dark' ? 0.2 : 0.1),
-            color: iconMeta.color,
-          }}
-        >
-          {iconMeta.node}
-        </Box>
-      </Box>
-
-      <Typography
-        variant="h5"
-        fontWeight={700}
-        sx={{ fontSize: { xs: 18, md: 20 }, lineHeight: 1.2, letterSpacing: -0.3 }}
-      >
-        {kpi.value}
-      </Typography>
-
-      <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, mt: 'auto' }}>
-        {kpi.subtitle}
-      </Typography>
-
-      {kpi.percentage != null ? (
-        <Stack direction="row" alignItems="baseline" gap={0.75} sx={{ pt: 0.5 }}>
-          <Typography
-            variant="subtitle2"
-            fontWeight={700}
-            sx={{ fontSize: 14, color: iconMeta.color }}
+      {loading ? (
+        <DashboardKpiCardSkeleton />
+      ) : (
+        <>
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: 1,
+            }}
           >
-            {kpi.percentage}%
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              fontWeight={600}
+              sx={{ fontSize: 11, letterSpacing: 0.3, lineHeight: 1.35, pr: 0.5 }}
+            >
+              {kpi.title}
+            </Typography>
+            <Box
+              sx={{
+                width: 34,
+                height: 34,
+                borderRadius: '8px',
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                bgcolor: alpha(iconMeta.color, theme.palette.mode === 'dark' ? 0.2 : 0.1),
+                color: iconMeta.color,
+              }}
+            >
+              {iconMeta.node}
+            </Box>
+          </Box>
+
+          <Typography
+            variant="h5"
+            fontWeight={700}
+            sx={{ fontSize: { xs: 18, md: 20 }, lineHeight: 1.2, letterSpacing: -0.3 }}
+          >
+            {kpi.value}
           </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11 }}>
-            of all clients
+
+          <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, mt: 'auto' }}>
+            {kpi.subtitle}
           </Typography>
-        </Stack>
-      ) : null}
+        </>
+      )}
     </Paper>
   )
 }
@@ -1965,6 +1926,7 @@ interface ProjectsOverviewSectionProps {
   statusFilter?: string
   pmFilter?: string
   action?: ReactNode
+  loading?: boolean
 }
 
 function ProjectsOverviewSection({
@@ -1974,6 +1936,7 @@ function ProjectsOverviewSection({
   statusFilter = 'All Status',
   pmFilter = 'All Managers',
   action,
+  loading = false,
 }: ProjectsOverviewSectionProps) {
   const dispatch = useAppDispatch()
   const sectors = useAppSelector((s) => s.settings.sectors)
@@ -2042,8 +2005,9 @@ function ProjectsOverviewSection({
           <Grid key={kpi.id} size={{ xs: 12, sm: 6, md: 4, lg: 3 }}>
             <ProjectOverviewKpiCard
               kpi={kpi}
+              loading={loading}
               onClick={
-                CLICKABLE_PROJECT_KPI_IDS.has(kpi.id)
+                !loading && CLICKABLE_PROJECT_KPI_IDS.has(kpi.id)
                   ? () => setDrawerKpi(kpi)
                   : undefined
               }
@@ -2064,6 +2028,9 @@ function ProjectsOverviewSection({
           title="Sector Tag"
           subtitle="Projects grouped by Sector Master"
         >
+          {loading ? (
+            <DashboardSectionLoader minHeight={80} size={22} />
+          ) : (
           <Box
             sx={{
               display: 'flex',
@@ -2082,6 +2049,7 @@ function ProjectsOverviewSection({
               ))
             )}
           </Box>
+          )}
         </ChartCard>
       </Box>
 
@@ -2091,6 +2059,9 @@ function ProjectsOverviewSection({
             title="Project Status Distribution"
             subtitle="Quick overview of all project statuses"
           >
+            {loading ? (
+              <DashboardSectionLoader minHeight={300} />
+            ) : (
             <Box
               sx={{
                 display: 'flex',
@@ -2133,6 +2104,7 @@ function ProjectsOverviewSection({
                 </Stack>
               </Box>
             </Box>
+            )}
           </ChartCard>
         </Grid>
 
@@ -2141,12 +2113,16 @@ function ProjectsOverviewSection({
             title="Design Only vs Design & Build"
             subtitle="Split of project delivery types"
           >
+            {loading ? (
+              <DashboardSectionLoader minHeight={300} />
+            ) : (
             <DonutChart
               data={designBuildDonutSlices}
               height={300}
               centerValue={String(designBuildTotal)}
               centerLabel="Projects"
             />
+            )}
           </ChartCard>
         </Grid>
       </Grid>
@@ -3787,12 +3763,16 @@ export function ProjectsTab({
   const fallbackProjects = useAppSelector((s) => s.projects.items ?? [])
   const [dashboardProjects, setDashboardProjects] = useState<Project[] | null>(null)
   const [backendSectorPerformance, setBackendSectorPerformance] = useState<SectorPerformanceRow[]>([])
+  const [loading, setLoading] = useState(true)
   const requestParams = useMemo(() => dashboardDateParams(dateRange), [dateRange])
 
   const loadProjectsDashboard = useCallback(
     async (isActive: () => boolean) => {
+      setLoading(true)
       try {
-        const response = await client.get('/dashboard/projects', { params: requestParams })
+        const response = await client.get('/dashboard/projects', {
+          params: requestParams,
+        })
         const data = unwrapApiData<ProjectsDashboardResponse>(response.data)
         if (!isActive()) return
         const projects = asDashboardProjects(data.data?.projects)
@@ -3800,46 +3780,25 @@ export function ProjectsTab({
         setDashboardProjects(projects)
       } catch {
         if (!isActive()) return
-        setDashboardProjects(null)
-        setBackendSectorPerformance([])
+        // Keep last successful dashboard payload; hydrate Redux listing as soft fallback.
         void dispatch(fetchProjects({ page: 1, pageSize: 500 }))
+      } finally {
+        if (isActive()) setLoading(false)
       }
     },
     [dispatch, requestParams],
   )
 
-  useEffect(() => {
-    let isMounted = true
-    const isActive = () => isMounted
-
-    void loadProjectsDashboard(isActive)
-
-    function handleFocus() {
-      void loadProjectsDashboard(isActive)
-    }
-
-    function handleVisibilityChange() {
-      if (document.visibilityState === 'visible') {
-        void loadProjectsDashboard(isActive)
-      }
-    }
-
-    window.addEventListener('focus', handleFocus)
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-
-    return () => {
-      isMounted = false
-      window.removeEventListener('focus', handleFocus)
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
-    }
-  }, [loadProjectsDashboard])
+  useDashboardReload(loadProjectsDashboard, [loadProjectsDashboard])
 
   const projects = dashboardProjects ?? fallbackProjects
+  const sectionLoading = loading && dashboardProjects == null
 
   return (
     <Box>
       <ProjectsOverviewSection
         projects={projects}
+        loading={sectionLoading}
         action={
           <DashboardDateRangeFilter
             period={datePeriod}
@@ -3849,12 +3808,34 @@ export function ProjectsTab({
           />
         }
       />
-      <ProjectAnalyticsSection projects={projects} />
-      <SectorAnalyticsSection
-        projects={projects}
-        backendSectorPerformance={backendSectorPerformance}
-      />
-      <ProjectDesignAnalyticsSection projects={projects} />
+      {sectionLoading ? (
+        <>
+          <Box sx={{ mb: 3 }}>
+            <ChartCard title="Project Analytics" subtitle="Loading project analytics">
+              <DashboardSectionLoader minHeight={280} />
+            </ChartCard>
+          </Box>
+          <Box sx={{ mb: 3 }}>
+            <ChartCard title="Sector Analytics" subtitle="Loading sector analytics">
+              <DashboardSectionLoader minHeight={280} />
+            </ChartCard>
+          </Box>
+          <Box sx={{ mb: 3 }}>
+            <ChartCard title="Design Analytics" subtitle="Loading design analytics">
+              <DashboardSectionLoader minHeight={280} />
+            </ChartCard>
+          </Box>
+        </>
+      ) : (
+        <>
+          <ProjectAnalyticsSection projects={projects} />
+          <SectorAnalyticsSection
+            projects={projects}
+            backendSectorPerformance={backendSectorPerformance}
+          />
+          <ProjectDesignAnalyticsSection projects={projects} />
+        </>
+      )}
     </Box>
   )
 }

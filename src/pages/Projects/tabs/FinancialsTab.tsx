@@ -17,14 +17,18 @@ import {
 } from '@mui/material'
 import { WorkspaceSection } from '../../../components/templates'
 import { tokens } from '@/design-system/tokens'
-import { Button } from '@/design-system/components'
+import { Button, useToast } from '@/design-system/components'
 import type { Project } from '../../../slices/projects/reducer'
 import { formatCurrencyCompact } from '../../../utils/formatters'
+import { openAuthenticatedDocument } from '@/utils/openAuthenticatedDocument'
 import {
   vendorInvoiceDocumentOpenUrl,
   TABLE_CELL_SX,
   TABLE_HEADER_SX,
 } from './live/vendorSettlement/utils'
+import { VendorInvoiceDetailModal } from './live/vendorSettlement/SettlementModals'
+import { ViewInvoiceDrawer } from './live/BillingTab'
+import { downloadClientInvoiceDocument } from './live/downloadClientInvoice'
 import { usePermission } from '@/hooks/usePermission'
 import { RecordDetailSectionTitle } from '@/pages/workspace/recordDetailTabUtils'
 import {
@@ -35,6 +39,9 @@ import {
 import { TaxComplianceSection } from './live/TaxComplianceSection'
 import { liveApi, type FinancialInvoiceRow, type FinancialOverviewDto } from '@/api/liveApi'
 import { ProjectTabSkeleton } from '../components/ProjectTabSkeleton'
+import { useAppDispatch } from '../../../store/hooks'
+import { fetchInvoices } from '../../../slices/live/thunk'
+import type { ClientInvoice, VendorInvoice } from '../../../slices/live/types'
 
 const SUMMARY_COUNT = 4
 
@@ -193,6 +200,8 @@ function CommercialRatesSection({
 }
 
 export default function FinancialsTab({ project }: FinancialsTabProps) {
+  const toast = useToast((s) => s.showToast)
+  const dispatch = useAppDispatch()
   const [activeSubTab, setActiveSubTab] = useState<FinancialSubTab>('overview')
   const canViewFinancialMetrics = usePermission('projectFinancials', 'view')
   const canViewCompliance = usePermission('compliance', 'view')
@@ -203,9 +212,63 @@ export default function FinancialsTab({ project }: FinancialsTabProps) {
   const [invoiceLoading, setInvoiceLoading] = useState(false)
   const [overviewLoaded, setOverviewLoaded] = useState(false)
   const [invoiceLoaded, setInvoiceLoaded] = useState(false)
+  const [viewClientInvoice, setViewClientInvoice] = useState<ClientInvoice | null>(null)
+  const [viewVendorInvoice, setViewVendorInvoice] = useState<VendorInvoice | null>(null)
+  const [viewLoadingId, setViewLoadingId] = useState<string | null>(null)
 
   const projectId = project.id
   const projectForSummary = project
+
+  async function handleViewInvoice(row: ProjectInvoiceRow) {
+    setViewLoadingId(row.id)
+    try {
+      if (row.invoiceType === 'Client' && row.id.startsWith('client-')) {
+        const invoiceId = row.id.slice('client-'.length)
+        const invoices = await dispatch(fetchInvoices(projectId)).unwrap()
+        const match = invoices.find((inv) => inv.id === invoiceId) ?? null
+        if (!match) {
+          toast({
+            title: 'Unable to open invoice',
+            description: 'Client invoice details could not be loaded.',
+            variant: 'error',
+          })
+          return
+        }
+        setViewClientInvoice(match)
+        return
+      }
+
+      if (row.invoiceType === 'Vendor' && row.id.startsWith('vendor-')) {
+        const invoiceId = row.id.slice('vendor-'.length)
+        const invoices = await liveApi.getVendorInvoices(projectId)
+        const match = invoices.find((inv) => inv.id === invoiceId) ?? null
+        if (!match) {
+          toast({
+            title: 'Unable to open invoice',
+            description: 'Vendor invoice details could not be loaded.',
+            variant: 'error',
+          })
+          return
+        }
+        setViewVendorInvoice(match)
+        return
+      }
+
+      toast({
+        title: 'Unable to open invoice',
+        description: 'Unrecognized invoice type.',
+        variant: 'error',
+      })
+    } catch {
+      toast({
+        title: 'Unable to open invoice',
+        description: 'Invoice details could not be loaded. Try again.',
+        variant: 'error',
+      })
+    } finally {
+      setViewLoadingId(null)
+    }
+  }
 
   useEffect(() => {
     if (activeSubTab !== 'overview' || overviewLoaded) return
@@ -591,7 +654,6 @@ export default function FinancialsTab({ project }: FinancialsTabProps) {
                   </TableHead>
                   <TableBody>
                     {projectInvoiceRows.map((row) => {
-                      const openUrl = invoiceDocumentOpenUrl(row.documentUrl)
                       return (
                         <TableRow key={row.id} hover>
                           <TableCell sx={{ ...TABLE_CELL_SX, fontWeight: 600 }}>
@@ -627,10 +689,9 @@ export default function FinancialsTab({ project }: FinancialsTabProps) {
                               variant="outlined"
                               color="primary"
                               label="View"
-                              disabled={!openUrl}
+                              loading={viewLoadingId === row.id}
                               onClick={() => {
-                                if (!openUrl) return
-                                window.open(openUrl, '_blank', 'noopener,noreferrer')
+                                void handleViewInvoice(row)
                               }}
                             />
                           </TableCell>
@@ -644,6 +705,55 @@ export default function FinancialsTab({ project }: FinancialsTabProps) {
           </WorkspaceSection>
         </Stack>
       ) : null}
+
+      <ViewInvoiceDrawer
+        open={!!viewClientInvoice}
+        invoice={viewClientInvoice}
+        projectName={projectForSummary.name}
+        onClose={() => setViewClientInvoice(null)}
+        onRecordPayment={() => {
+          setViewClientInvoice(null)
+        }}
+        onDownloadPdf={() => {
+          if (!viewClientInvoice) return
+          const openUrl = invoiceDocumentOpenUrl(viewClientInvoice.documentUrl)
+          if (openUrl) {
+            void openAuthenticatedDocument(openUrl, () => {
+              toast({
+                title: 'Unable to open invoice document',
+                description: 'The invoice document could not be opened.',
+                variant: 'error',
+              })
+            })
+            return
+          }
+          downloadClientInvoiceDocument({
+            invoiceNumber: viewClientInvoice.invoiceNumber,
+            invoiceDate: viewClientInvoice.invoiceDate,
+            dueDate: viewClientInvoice.dueDate,
+            projectName: projectForSummary.name,
+            clientName: viewClientInvoice.clientName ?? projectForSummary.customerName ?? '',
+            notes: viewClientInvoice.notes,
+            milestoneName: viewClientInvoice.milestoneName,
+            serviceName: viewClientInvoice.serviceName,
+            lineItems: viewClientInvoice.lineItems.map((l) => ({
+              serviceName: l.serviceName,
+              amount: l.amount,
+              labourCessRate: l.labourCessRate,
+              gstRate: l.gstRate,
+              labourCessAmount: l.labourCessAmount,
+              taxableAmount: l.taxableAmount,
+              gstAmount: l.gstAmount,
+            })),
+          })
+        }}
+      />
+
+      <VendorInvoiceDetailModal
+        open={!!viewVendorInvoice}
+        invoice={viewVendorInvoice}
+        onClose={() => setViewVendorInvoice(null)}
+      />
 
       {activeSubTab === 'compliance' && canViewCompliance ? (
         <Stack gap={2}>

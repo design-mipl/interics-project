@@ -172,7 +172,27 @@ const customersSlice = createSlice({
       })
       .addCase(fetchCustomers.fulfilled, (state, action) => {
         state.loading = false
-        state.items = action.payload.items ?? []
+        const prevById = new Map(state.items.map((c) => [c.id, c]))
+        const listItems = action.payload.items ?? []
+        state.items = listItems.map((item) => {
+          const prev = prevById.get(item.id)
+          const detail =
+            state.selectedItem?.id === item.id ? state.selectedItem : null
+          const contacts =
+            detail?.contacts?.length
+              ? detail.contacts
+              : prev?.contacts?.length
+                ? prev.contacts
+                : item.contacts
+          return contacts?.length ? { ...item, contacts } : item
+        })
+        // Keep a freshly loaded detail customer in the list if the page omitted it.
+        if (
+          state.selectedItem &&
+          !state.items.some((c) => c.id === state.selectedItem!.id)
+        ) {
+          state.items.unshift(state.selectedItem)
+        }
         const total = action.payload.total ?? 0
         state.pagination.total = total
         if (action.payload.pageSize) state.pagination.pageSize = action.payload.pageSize
@@ -199,6 +219,8 @@ const customersSlice = createSlice({
             activeProjects: action.payload.activeProjects || prev.activeProjects,
             totalReceivables: action.payload.totalReceivables || prev.totalReceivables,
           }
+        } else {
+          state.items.unshift(action.payload)
         }
       })
       .addCase(createCustomer.pending, (state) => {

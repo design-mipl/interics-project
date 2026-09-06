@@ -18,7 +18,7 @@ import {
 import { Add, Close, Delete, Description, Upload } from '@mui/icons-material'
 import { DrawerForm, FormField } from '@/components/templates'
 import { tokens } from '@/design-system/tokens'
-import { formatCurrency, formatInr } from '@/utils/formatters'
+import { formatInr } from '@/utils/formatters'
 
 export interface VendorOfferServiceOption {
   id: string
@@ -315,11 +315,11 @@ export function VendorOfferDrawer({
             Service Amount
           </Typography>
           <Typography variant="body2" sx={{ fontSize: 14, fontWeight: 600 }}>
-            {draft.serviceId ? `₹${formatCurrency(serviceAmount)}` : '—'}
+            {draft.serviceId ? `₹${formatInr(serviceAmount)}` : '—'}
           </Typography>
           {draft.serviceId && serviceAmount > 0 ? (
             <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11 }}>
-              ₹{formatInr(serviceAmount)} from Client Offer
+              From Client Offer
             </Typography>
           ) : null}
         </Box>

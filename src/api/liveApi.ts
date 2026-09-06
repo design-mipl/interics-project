@@ -303,6 +303,10 @@ export const liveApi = {
     return unwrapApiData<ProjectDocumentListItem>(res.data)
   },
 
+  deleteProjectDocument: async (projectId: string, documentId: string) => {
+    await client.delete(`${root(projectId)}/document-uploads/${documentId}`)
+  },
+
   getGeneratedDocuments: async (projectId: string) => {
     const res = await client.get(`${root(projectId)}/generated-documents`)
     return unwrapApiData<GeneratedVendorDocumentApi[]>(res.data) ?? []

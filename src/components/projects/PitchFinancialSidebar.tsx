@@ -4,10 +4,6 @@ import type { PitchFinancialMetrics } from '@/store/selectors/pitchSelectors'
 import { tokens } from '@/design-system/tokens'
 import { formatInr } from '@/utils/formatters'
 
-function formatLakh(value: number): string {
-  return (value / 100000).toFixed(1) + ' L'
-}
-
 export interface PitchFinancialSidebarProps {
   version: PitchVersion
   metrics: PitchFinancialMetrics
@@ -41,20 +37,20 @@ export function PitchFinancialSidebar({ version, metrics: fin }: PitchFinancialS
           <Stack direction="row" justifyContent="space-between" alignItems="center">
             <Typography variant="body2" sx={{ fontSize: 12, color: 'text.secondary' }}>Revenue</Typography>
             <Typography variant="body2" sx={{ fontSize: 13, fontWeight: 700, color: tokens.color.primary[600] }}>
-              ₹{formatLakh(version.totalRevenue)}
+              ₹{formatInr(version.totalRevenue)}
             </Typography>
           </Stack>
           <Divider />
           <Stack direction="row" justifyContent="space-between" alignItems="center">
             <Typography variant="body2" sx={{ fontSize: 13, fontWeight: 600 }}>Total Cost</Typography>
             <Typography variant="body2" sx={{ fontSize: 14, fontWeight: 700, color: 'warning.main' }}>
-              ₹{formatLakh(fin.totalCost)}
+              ₹{formatInr(fin.totalCost)}
             </Typography>
           </Stack>
           <Stack direction="row" justifyContent="space-between" alignItems="center">
             <Typography variant="body2" sx={{ fontSize: 13, fontWeight: 600 }}>Profitability</Typography>
             <Typography variant="body2" sx={{ fontSize: 14, fontWeight: 700, color: fin.profitability < 0 ? 'error.main' : 'success.main' }}>
-              ₹{formatLakh(fin.profitability)}
+              ₹{formatInr(fin.profitability)}
             </Typography>
           </Stack>
         </Stack>

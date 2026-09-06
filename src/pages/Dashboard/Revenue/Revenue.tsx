@@ -2,7 +2,7 @@
  * Dashboard Revenue tab.
  * KPI cards, detail drawer, filters, and revenue charts are kept together.
  */
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode, useCallback } from 'react'
 import {
   Box,
   Drawer,
@@ -37,8 +37,8 @@ import {
   BarChart,
   ChartCard,
   SearchInput,
-  Select,
   StatusBadge,
+  isoFromDate,
 } from '@/design-system/components'
 import type { StatusType } from '@/design-system/components'
 import { CHART_COLORS, tokens } from '@/design-system/tokens'
@@ -46,15 +46,17 @@ import {
   clampListingPage0Based,
   formatListingShowingLabel,
 } from '@/components/listing/listingStandards'
+import { FilterableHeaderCell } from '@/components/listing/FilterableSortHeader'
 import client from '@/api/client'
 import { unwrapApiData } from '@/modules/system-settings/shared/api'
 import { formatCurrency } from '@/utils/formatters'
 import { DashboardDateRangeFilter } from '../DashboardDateRangeFilter'
 import {
   type DashboardDatePeriod,
-  dashboardDateParams,
   type DashboardDateRange,
 } from '../dashboardDateRange'
+import { useDashboardReload } from '../useDashboardReload'
+import { DashboardKpiCardSkeleton, DashboardSectionLoader } from '../DashboardTabLoader'
 
 interface ChartSeriesLegendItem {
   label: string
@@ -106,7 +108,7 @@ export const DASHBOARD_FILTER_OPTIONS = {
 
 export const REVENUE_TIME_PERIOD_OPTIONS = [
   'This Month',
-  'Last Month',
+  'Last 6 Months',
   'This Financial Year',
   'Custom Range',
 ] as const
@@ -342,8 +344,8 @@ function periodFactor(period: RevenueTimePeriod): number {
   switch (period) {
     case 'This Month':
       return 0.12
-    case 'Last Month':
-      return 0.11
+    case 'Last 6 Months':
+      return 0.5
     case 'This Financial Year':
       return 1
     case 'Custom Range':
@@ -373,8 +375,8 @@ function getGranularity(
 ): RevenueChartGranularity {
   switch (period) {
     case 'This Month':
-    case 'Last Month':
       return 'daily'
+    case 'Last 6 Months':
     case 'This Financial Year':
       return 'monthly'
     case 'Custom Range': {
@@ -538,12 +540,7 @@ function buildSeriesForPeriod(
   clientReceivedVsVendorPayments: RevenueChartPoint[]
 } {
   if (granularity === 'daily') {
-    const days =
-      period === 'This Month' || period === 'Last Month'
-        ? period === 'This Month'
-          ? 30
-          : 28
-        : customDayCount(customRange)
+    const days = period === 'This Month' ? 30 : customDayCount(customRange)
     return buildDailySeries(factor, days, dateType)
   }
 
@@ -551,7 +548,7 @@ function buildSeriesForPeriod(
     return buildYearlySeries(factor, ['FY23', 'FY24', 'FY25'], dateType)
   }
 
-  if (period === 'Custom Range') {
+  if (period === 'Last 6 Months' || period === 'Custom Range') {
     return buildMonthlySeries(factor, ['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep'], dateType, 0)
   }
 
@@ -756,16 +753,17 @@ const ICON_MAP: Record<RevenueKpi['icon'], { node: ReactNode; color: string }> =
 interface RevenueKpiCardProps {
   kpi: RevenueKpi
   onClick?: () => void
+  loading?: boolean
 }
 
-export function RevenueKpiCard({ kpi, onClick }: RevenueKpiCardProps) {
+export function RevenueKpiCard({ kpi, onClick, loading = false }: RevenueKpiCardProps) {
   const theme = useTheme()
   const iconMeta = ICON_MAP[kpi.icon]
 
   return (
     <Paper
       elevation={0}
-      onClick={onClick}
+      onClick={loading ? undefined : onClick}
       sx={{
         height: '100%',
         p: 2,
@@ -776,65 +774,72 @@ export function RevenueKpiCard({ kpi, onClick }: RevenueKpiCardProps) {
         flexDirection: 'column',
         gap: 1,
         bgcolor: 'background.paper',
-        ...(onClick && {
-          cursor: 'pointer',
-          transition: 'border-color 0.15s, box-shadow 0.15s',
-          '&:hover': {
-            borderColor: tokens.color.primary[300],
-            boxShadow: `0 2px 8px rgba(0,0,0,0.08)`,
-          },
-        }),
+        ...(!loading &&
+          onClick && {
+            cursor: 'pointer',
+            transition: 'border-color 0.15s, box-shadow 0.15s',
+            '&:hover': {
+              borderColor: tokens.color.primary[300],
+              boxShadow: `0 2px 8px rgba(0,0,0,0.08)`,
+            },
+          }),
       }}
     >
-      <Box
-        sx={{
-          display: 'flex',
-          alignItems: 'flex-start',
-          justifyContent: 'space-between',
-          gap: 1,
-        }}
-      >
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          fontWeight={600}
-          sx={{
-            fontSize: 11,
-            letterSpacing: 0.3,
-            lineHeight: 1.35,
-            pr: 0.5,
-          }}
-        >
-          {kpi.title}
-        </Typography>
-        <Box
-          sx={{
-            width: 34,
-            height: 34,
-            borderRadius: '8px',
-            flexShrink: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            bgcolor: alpha(iconMeta.color, theme.palette.mode === 'dark' ? 0.2 : 0.1),
-            color: iconMeta.color,
-          }}
-        >
-          {iconMeta.node}
-        </Box>
-      </Box>
+      {loading ? (
+        <DashboardKpiCardSkeleton />
+      ) : (
+        <>
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: 1,
+            }}
+          >
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              fontWeight={600}
+              sx={{
+                fontSize: 11,
+                letterSpacing: 0.3,
+                lineHeight: 1.35,
+                pr: 0.5,
+              }}
+            >
+              {kpi.title}
+            </Typography>
+            <Box
+              sx={{
+                width: 34,
+                height: 34,
+                borderRadius: '8px',
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                bgcolor: alpha(iconMeta.color, theme.palette.mode === 'dark' ? 0.2 : 0.1),
+                color: iconMeta.color,
+              }}
+            >
+              {iconMeta.node}
+            </Box>
+          </Box>
 
-      <Typography
-        variant="h5"
-        fontWeight={700}
-        sx={{ fontSize: { xs: 20, md: 22 }, lineHeight: 1.2, letterSpacing: -0.3 }}
-      >
-        ₹{formatCurrency(kpi.value)}
-      </Typography>
+          <Typography
+            variant="h5"
+            fontWeight={700}
+            sx={{ fontSize: { xs: 20, md: 22 }, lineHeight: 1.2, letterSpacing: -0.3 }}
+          >
+            ₹{formatCurrency(kpi.value)}
+          </Typography>
 
-      <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, mt: 'auto' }}>
-        {kpi.subtitle}
-      </Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, mt: 'auto' }}>
+            {kpi.subtitle}
+          </Typography>
+        </>
+      )}
     </Paper>
   )
 }
@@ -1091,8 +1096,6 @@ function getColumnCellSx(col: DrawerColumn) {
   }
 }
 
-const FILTER_CONTROL_SX = { minWidth: 148, flex: '0 0 auto' } as const
-
 export interface RevenueKpiDrawerProps {
   open: boolean
   onClose: () => void
@@ -1107,11 +1110,9 @@ export function RevenueKpiDrawer({
   rowsByKpi = null,
 }: RevenueKpiDrawerProps) {
   const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<string | number>('all')
 
   useEffect(() => {
     setSearch('')
-    setStatusFilter('all')
   }, [kpi?.id])
 
   const config = useMemo(() => {
@@ -1119,39 +1120,19 @@ export function RevenueKpiDrawer({
     return getDrawerConfig(kpi.id as ClickableKpiId, rowsByKpi)
   }, [kpi, rowsByKpi])
 
-  const statusColumn = config?.columns.find((col) => col.format === 'status')
-  const showStatusFilter = Boolean(statusColumn) && kpi?.id !== 'received'
-  const statusOptions = useMemo(() => {
-    if (!config || !statusColumn) return []
-    const values = Array.from(
-      new Set(config.rows.map((row) => String(row[statusColumn.key] ?? '')).filter(Boolean)),
-    )
-    return [
-      { label: 'All Status', value: 'all' },
-      ...values.map((value) => ({ label: value, value })),
-    ]
-  }, [config, statusColumn])
-
   const visibleRows = useMemo(() => {
     if (!config) return []
     const query = search.trim().toLowerCase()
 
-    return config.rows.filter((row) => {
-      if (statusColumn && statusFilter !== 'all' && String(row[statusColumn.key]) !== String(statusFilter)) {
-        return false
-      }
+    if (!query) return config.rows
 
-      if (query) {
-        const matchesSearch = config.columns.some((col) => {
-          if (col.format === 'currency') return false
-          return String(row[col.key] ?? '').toLowerCase().includes(query)
-        })
-        if (!matchesSearch) return false
-      }
-
-      return true
-    })
-  }, [config, search, statusColumn, statusFilter])
+    return config.rows.filter((row) =>
+      config.columns.some((col) => {
+        if (col.format === 'currency') return false
+        return String(row[col.key] ?? '').toLowerCase().includes(query)
+      }),
+    )
+  }, [config, search])
 
   if (!kpi || !config) return null
 
@@ -1230,15 +1211,6 @@ export function RevenueKpiDrawer({
           debounce={200}
           sx={{ flex: '1 1 180px', minWidth: 160, maxWidth: 280 }}
         />
-        {showStatusFilter ? (
-          <Select
-            size="sm"
-            value={statusFilter}
-            onChange={setStatusFilter}
-            options={statusOptions}
-            sx={FILTER_CONTROL_SX}
-          />
-        ) : null}
       </Box>
 
       <Box sx={{ px: 3, pb: 3, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
@@ -1397,22 +1369,47 @@ function renderRevenueProjectCell(
   return String(value ?? '')
 }
 
-const REVENUE_PROJECT_PAGE_SIZE_OPTIONS = [25, 50, 75, 100] as const
+const REVENUE_PROJECT_PAGE_SIZE_OPTIONS = [10, 25, 50, 75, 100] as const
 
-function RevenueProjectListingTable({ rows }: { rows: RevenueProjectListingRow[] }) {
+function RevenueProjectListingTable({
+  rows,
+  loading = false,
+}: {
+  rows: RevenueProjectListingRow[]
+  loading?: boolean
+}) {
   const [page, setPage] = useState(0)
   const [rowsPerPage, setRowsPerPage] = useState(10)
-  const safePage = clampListingPage0Based(page, rows.length, rowsPerPage)
+  const [statusFilter, setStatusFilter] = useState('')
+
+  const statusOptions = useMemo(() => {
+    const values = Array.from(
+      new Set(rows.map((row) => String(row.status ?? '').trim()).filter(Boolean)),
+    ).sort((a, b) => a.localeCompare(b))
+    return values.map((value) => ({ value, label: value }))
+  }, [rows])
+
+  const filteredRows = useMemo(() => {
+    if (!statusFilter) return rows
+    return rows.filter((row) => String(row.status ?? '') === statusFilter)
+  }, [rows, statusFilter])
+
+  const safePage = clampListingPage0Based(page, filteredRows.length, rowsPerPage)
   const visibleRows = useMemo(
-    () => rows.slice(safePage * rowsPerPage, safePage * rowsPerPage + rowsPerPage),
-    [rows, rowsPerPage, safePage],
+    () => filteredRows.slice(safePage * rowsPerPage, safePage * rowsPerPage + rowsPerPage),
+    [filteredRows, rowsPerPage, safePage],
   )
-  const pageCount = Math.max(1, Math.ceil(rows.length / rowsPerPage))
+  const pageCount = Math.max(1, Math.ceil(filteredRows.length / rowsPerPage))
 
   useEffect(() => {
-    const nextPage = clampListingPage0Based(page, rows.length, rowsPerPage)
+    const nextPage = clampListingPage0Based(page, filteredRows.length, rowsPerPage)
     if (nextPage !== page) setPage(nextPage)
-  }, [page, rows.length, rowsPerPage])
+  }, [filteredRows.length, page, rowsPerPage])
+
+  function handleStatusFilter(value: string) {
+    setStatusFilter(value)
+    setPage(0)
+  }
 
   return (
     <ChartCard
@@ -1456,43 +1453,80 @@ function RevenueProjectListingTable({ rows }: { rows: RevenueProjectListingRow[]
           >
             <TableHead>
               <TableRow>
-                {REVENUE_PROJECT_COLUMNS.map((column) => (
-                  <TableCell
-                    key={column.key}
-                    align="left"
-                    sx={{ width: column.width }}
-                  >
-                    {column.label}
-                  </TableCell>
-                ))}
+                {REVENUE_PROJECT_COLUMNS.map((column) =>
+                  column.key === 'status' ? (
+                    <FilterableHeaderCell
+                      key={column.key}
+                      label={column.label}
+                      filterValue={statusFilter}
+                      filterOptions={statusOptions}
+                      onFilter={handleStatusFilter}
+                      sx={{ width: column.width }}
+                    />
+                  ) : (
+                    <TableCell key={column.key} align="left" sx={{ width: column.width }}>
+                      {column.label}
+                    </TableCell>
+                  ),
+                )}
               </TableRow>
             </TableHead>
             <TableBody>
-              {visibleRows.map((row) => (
-                <TableRow key={row.id} hover={false}>
-                  {REVENUE_PROJECT_COLUMNS.map((column) => (
-                    <TableCell key={column.key} align="left">
-                      {renderRevenueProjectCell(row, column)}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))}
-              {rows.length === 0 ? (
+              {loading ? (
                 <TableRow>
                   <TableCell
                     colSpan={REVENUE_PROJECT_COLUMNS.length}
-                    sx={{ py: 4, textAlign: 'center' }}
+                    sx={{
+                      py: 0,
+                      borderBottom: 'none',
+                      '&.MuiTableCell-body': { textAlign: 'center' },
+                    }}
                   >
-                    <Typography variant="body2" color="text.secondary">
-                      No revenue projects found.
-                    </Typography>
+                    <DashboardSectionLoader minHeight={180} />
                   </TableCell>
                 </TableRow>
-              ) : null}
+              ) : (
+                <>
+                  {visibleRows.map((row) => (
+                    <TableRow key={row.id} hover={false}>
+                      {REVENUE_PROJECT_COLUMNS.map((column) => (
+                        <TableCell key={column.key} align="left">
+                          {renderRevenueProjectCell(row, column)}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  ))}
+                  {filteredRows.length === 0 ? (
+                    <TableRow>
+                      <TableCell
+                        colSpan={REVENUE_PROJECT_COLUMNS.length}
+                        sx={{
+                          py: 4,
+                          '&.MuiTableCell-body': {
+                            textAlign: 'center',
+                            whiteSpace: 'normal',
+                          },
+                        }}
+                      >
+                        <Typography
+                          variant="body2"
+                          color="text.secondary"
+                          sx={{ width: '100%', textAlign: 'center' }}
+                        >
+                          {rows.length === 0
+                            ? 'No revenue projects found.'
+                            : 'No projects match the selected status.'}
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                </>
+              )}
             </TableBody>
           </Table>
         </TableContainer>
 
+        {!loading ? (
         <Box
           sx={{
             display: 'flex',
@@ -1505,7 +1539,7 @@ function RevenueProjectListingTable({ rows }: { rows: RevenueProjectListingRow[]
           }}
         >
           <Typography variant="caption" color="text.secondary">
-            {formatListingShowingLabel(safePage, rowsPerPage, rows.length)}
+            {formatListingShowingLabel(safePage, rowsPerPage, filteredRows.length)}
           </Typography>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
@@ -1528,11 +1562,6 @@ function RevenueProjectListingTable({ rows }: { rows: RevenueProjectListingRow[]
                   '& .MuiOutlinedInput-notchedOutline': { border: 'none' },
                 }}
               >
-                {rowsPerPage === 10 ? (
-                  <MenuItem value={10} sx={{ display: 'none' }}>
-                    10
-                  </MenuItem>
-                ) : null}
                 {REVENUE_PROJECT_PAGE_SIZE_OPTIONS.map((size) => (
                   <MenuItem key={size} value={size} sx={MENU_ITEM_SX}>
                     {size}
@@ -1554,10 +1583,10 @@ function RevenueProjectListingTable({ rows }: { rows: RevenueProjectListingRow[]
               </Typography>
               <IconButton
                 size="small"
-                disabled={(safePage + 1) * rowsPerPage >= rows.length}
+                disabled={(safePage + 1) * rowsPerPage >= filteredRows.length}
                 onClick={() =>
                   setPage((current) =>
-                    clampListingPage0Based(current + 1, rows.length, rowsPerPage),
+                    clampListingPage0Based(current + 1, filteredRows.length, rowsPerPage),
                   )
                 }
               >
@@ -1566,6 +1595,7 @@ function RevenueProjectListingTable({ rows }: { rows: RevenueProjectListingRow[]
             </Box>
           </Box>
         </Box>
+        ) : null}
       </Box>
     </ChartCard>
   )
@@ -1610,16 +1640,18 @@ export interface FinancialRevenueYearSectionProps {
   period?: RevenueTimePeriod
   customRange?: [Date | null, Date | null]
   data?: FinancialRevenueYearPoint[] | null
+  loading?: boolean
 }
 
 export function FinancialRevenueYearSection({
   period = 'This Financial Year',
   customRange = [null, null],
   data,
+  loading = false,
 }: FinancialRevenueYearSectionProps) {
   const analytics = useMemo(
     () =>
-      data
+      data != null && data.length > 0
         ? financialRevenueYearAnalyticsFromData(data)
         : getFinancialRevenueYearAnalytics(period, customRange),
     [data, period, customRange],
@@ -1643,6 +1675,7 @@ export function FinancialRevenueYearSection({
         data={[...analytics.chartData]}
         xKey="month"
         height={280}
+        loading={loading}
         showLegend={false}
         bars={[
           { key: 'poValue', label: 'PO Value', color: CHART_COLORS.teal },
@@ -1654,13 +1687,25 @@ export function FinancialRevenueYearSection({
 
       <Grid container spacing={2} sx={{ mt: 2.5 }}>
         <Grid size={{ xs: 12, sm: 4 }}>
-          <SummaryStat label="Total PO Value" value={analytics.totals.poValue} />
+          {loading ? (
+            <DashboardSectionLoader minHeight={72} size={22} />
+          ) : (
+            <SummaryStat label="Total PO Value" value={analytics.totals.poValue} />
+          )}
         </Grid>
         <Grid size={{ xs: 12, sm: 4 }}>
-          <SummaryStat label="Total Invoice Value" value={analytics.totals.invoiceValue} />
+          {loading ? (
+            <DashboardSectionLoader minHeight={72} size={22} />
+          ) : (
+            <SummaryStat label="Total Invoice Value" value={analytics.totals.invoiceValue} />
+          )}
         </Grid>
         <Grid size={{ xs: 12, sm: 4 }}>
-          <SummaryStat label="Total Amount Received" value={analytics.totals.amountReceived} />
+          {loading ? (
+            <DashboardSectionLoader minHeight={72} size={22} />
+          ) : (
+            <SummaryStat label="Total Amount Received" value={analytics.totals.amountReceived} />
+          )}
         </Grid>
       </Grid>
     </ChartCard>
@@ -1694,7 +1739,16 @@ export function RevenueTab({
   const [serverRevenueProjects, setServerRevenueProjects] = useState<
     RevenueProjectListingRow[] | null
   >(null)
-  const requestParams = useMemo(() => dashboardDateParams(dateRange), [dateRange])
+  const [loading, setLoading] = useState(true)
+  const fromIso = isoFromDate(dateRange[0])
+  const toIso = isoFromDate(dateRange[1])
+  const requestParams = useMemo(
+    () => ({
+      ...(fromIso ? { from: fromIso } : {}),
+      ...(toIso ? { to: toIso } : {}),
+    }),
+    [fromIso, toIso],
+  )
 
   const localRevenueAnalytics = useMemo(
     () => getRevenueAnalytics('Custom Range', dateRange),
@@ -1703,19 +1757,23 @@ export function RevenueTab({
   const revenueAnalytics = useMemo(
     () => ({
       ...localRevenueAnalytics,
-      kpis: serverKpis ?? localRevenueAnalytics.kpis,
+      kpis:
+        serverKpis && serverKpis.length > 0 ? serverKpis : localRevenueAnalytics.kpis,
       clientReceivedVsVendorPayments:
-        serverClientVsVendorData ?? localRevenueAnalytics.clientReceivedVsVendorPayments,
+        serverClientVsVendorData && serverClientVsVendorData.length > 0
+          ? serverClientVsVendorData
+          : localRevenueAnalytics.clientReceivedVsVendorPayments,
     }),
     [localRevenueAnalytics, serverClientVsVendorData, serverKpis],
   )
 
-  useEffect(() => {
-    let isMounted = true
-
-    async function loadRevenueKpis() {
+  const loadRevenueDashboard = useCallback(
+    async (isActive: () => boolean) => {
+      setLoading(true)
       try {
-        const response = await client.get('/dashboard/revenue', { params: requestParams })
+        const response = await client.get('/dashboard/revenue', {
+          params: requestParams,
+        })
         const data = unwrapApiData<RevenueDashboardResponse>(response.data)
         const clientVsVendorChart = data.charts?.find(
           (chart) => chart.id === 'client-revenue-vs-vendor-payments',
@@ -1723,7 +1781,7 @@ export function RevenueTab({
         const financialRevenueYearChart = data.charts?.find(
           (chart) => chart.id === 'financial-revenue-year',
         )
-        if (!isMounted) return
+        if (!isActive()) return
         setServerKpis(Array.isArray(data.kpis) ? data.kpis : [])
         setServerClientVsVendorData(asRevenueChartData(clientVsVendorChart?.data))
         setServerFinancialRevenueYearData(
@@ -1732,21 +1790,18 @@ export function RevenueTab({
         setServerKpiBreakdowns(asRevenueKpiBreakdowns(data.data?.kpiBreakdowns))
         setServerRevenueProjects(asRevenueProjectListingRows(data.data?.revenueProjects))
       } catch {
-        if (!isMounted) return
-        setServerKpis([])
-        setServerClientVsVendorData([])
-        setServerFinancialRevenueYearData([])
-        setServerKpiBreakdowns({})
-        setServerRevenueProjects([])
+        // Keep the last successful payload so a failed/raced refetch cannot blank the UI.
+        if (!isActive()) return
+      } finally {
+        if (isActive()) setLoading(false)
       }
-    }
+    },
+    [requestParams],
+  )
 
-    void loadRevenueKpis()
+  useDashboardReload(loadRevenueDashboard, [loadRevenueDashboard])
 
-    return () => {
-      isMounted = false
-    }
-  }, [requestParams])
+  const sectionLoading = loading && serverKpis == null
 
   return (
     <Box>
@@ -1786,8 +1841,9 @@ export function RevenueTab({
           <Grid key={kpi.id} size={{ xs: 1, sm: 1, md: 1 }}>
             <RevenueKpiCard
               kpi={kpi}
+              loading={sectionLoading}
               onClick={
-                CLICKABLE_KPI_IDS.has(kpi.id)
+                !sectionLoading && CLICKABLE_KPI_IDS.has(kpi.id)
                   ? () => setDrawerKpi(kpi)
                   : undefined
               }
@@ -1804,7 +1860,10 @@ export function RevenueTab({
       />
 
       <Box sx={{ mb: 3 }}>
-        <RevenueProjectListingTable rows={serverRevenueProjects ?? []} />
+        <RevenueProjectListingTable
+          rows={serverRevenueProjects ?? []}
+          loading={sectionLoading}
+        />
       </Box>
 
       <Typography
@@ -1843,6 +1902,7 @@ export function RevenueTab({
               data={[...revenueAnalytics.clientReceivedVsVendorPayments]}
               xKey="month"
               height={280}
+              loading={sectionLoading}
               showLegend={false}
               bars={[
                 {
@@ -1866,6 +1926,7 @@ export function RevenueTab({
             period="Custom Range"
             customRange={dateRange}
             data={serverFinancialRevenueYearData}
+            loading={sectionLoading}
           />
         </Grid>
       </Grid>

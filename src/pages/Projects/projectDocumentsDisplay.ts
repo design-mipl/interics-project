@@ -2,6 +2,7 @@ import type { ClientPO, VendorPO } from '../../slices/baseline/reducer'
 import type { PitchVersion, VendorMapping } from '../../slices/pitch/reducer'
 import type { Project, ProjectDocumentFile } from '../../slices/projects/reducer'
 import { formatDate } from '../../utils/formatters'
+import { openAuthenticatedDocument } from '@/utils/openAuthenticatedDocument'
 import { parseHttpUrl } from './projectCreateHelpers'
 
 export interface ProjectDocumentColumnRow {
@@ -73,7 +74,9 @@ function fileToRow(
     blobUrl: file.blobUrl,
     fileName: file.fileName,
     canDelete: false,
-    onView: () => window.open(file.blobUrl, '_blank', 'noopener,noreferrer'),
+    onView: () => {
+      void openAuthenticatedDocument(file.blobUrl)
+    },
     onDownload: () => {
       const a = document.createElement('a')
       a.href = file.blobUrl
@@ -312,7 +315,7 @@ function poDocumentLabel(poNumber: string, fileName?: string | null): string {
 }
 
 function openExternalDocument(url: string): void {
-  window.open(url, '_blank', 'noopener,noreferrer')
+  void openAuthenticatedDocument(url)
 }
 
 /** Client PO file from Live / Transition baseline. */
@@ -393,17 +396,41 @@ export function collectPitchVendorQuotationRows(
   return rows
 }
 
-/** Merge document rows without duplicating the same file URL or blob. */
+/** Merge document rows without duplicating the same file URL, blob, or stable document ID. */
 export function mergeDocumentRows(
   ...groups: ProjectDocumentColumnRow[][]
 ): ProjectDocumentColumnRow[] {
   const seen = new Set<string>()
+  const seenEntityIds = new Set<string>()
   const merged: ProjectDocumentColumnRow[] = []
+
+  const entityIdFromRowId = (id: string): string | null => {
+    const known = [
+      'baseline-client-po-',
+      'baseline-vendor-po-',
+      'api-client-po-',
+      'api-vendor-po-',
+    ]
+    for (const prefix of known) {
+      if (id.startsWith(prefix)) return id.slice(prefix.length)
+    }
+    const apiGeneric = /^api-[a-z0-9_]+-(.+)$/i.exec(id)
+    if (apiGeneric?.[1]) return apiGeneric[1]
+    // Bare UUID / upload id
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      return id
+    }
+    return null
+  }
+
   for (const group of groups) {
     for (const row of group) {
+      const entityId = entityIdFromRowId(row.id)
+      if (entityId && seenEntityIds.has(entityId)) continue
       const key = row.href ?? row.blobUrl ?? row.id
       if (seen.has(key)) continue
       seen.add(key)
+      if (entityId) seenEntityIds.add(entityId)
       merged.push(row)
     }
   }

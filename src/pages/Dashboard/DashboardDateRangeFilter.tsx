@@ -101,7 +101,7 @@ export function DashboardDateRangeFilter({
           }}
         >
           <MenuItem value="This Month">This Month</MenuItem>
-          <MenuItem value="Last Month">Last Month</MenuItem>
+          <MenuItem value="Last 6 Months">Last 6 Months</MenuItem>
           <MenuItem value="This Financial Year">This Financial Year</MenuItem>
           <MenuItem value="Custom Range">Custom Range</MenuItem>
         </TextField>

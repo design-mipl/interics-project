@@ -159,21 +159,61 @@ function useClientPoTaxPreviewContext(
 ): { baseline: Baseline | null; settingsServices: Service[] } {
   const dispatch = useAppDispatch()
   const baseline = useAppSelector((s) => s.baseline.baseline)
-  const settingsServices = useAppSelector((s) => s.settings.services)
+  const reduxServices = useAppSelector((s) => s.settings.services)
+  const [dropdownGstServices, setDropdownGstServices] = useState<Service[]>([])
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      setDropdownGstServices([])
+      return
+    }
     void dispatch(fetchBaseline(projectId))
     void dispatch(fetchServices({ limit: 1000, force: true }))
+    let cancelled = false
+    void dropdownsApi
+      .getServices()
+      .then((rows) => {
+        if (cancelled) return
+        setDropdownGstServices(
+          rows.map((row) => ({
+            id: row.value,
+            name: row.label,
+            categoryId: row.categoryId,
+            sacCodeId: null,
+            gstRate: Number(row.gstRate),
+            allowGSTOverride: false,
+            allowVendorMapping: false,
+            tags: [],
+            status: 'active' as const,
+          })),
+        )
+      })
+      .catch(() => {
+        if (!cancelled) setDropdownGstServices([])
+      })
+    return () => {
+      cancelled = true
+    }
   }, [open, projectId, dispatch])
 
-  return useMemo(
-    () => ({
+  return useMemo(() => {
+    const byId = new Map<string, Service>()
+    for (const svc of reduxServices) {
+      byId.set(svc.id, svc)
+    }
+    for (const svc of dropdownGstServices) {
+      const existing = byId.get(svc.id)
+      if (!existing) {
+        byId.set(svc.id, svc)
+      } else if (existing.gstRate == null || Number.isNaN(existing.gstRate)) {
+        byId.set(svc.id, { ...existing, gstRate: svc.gstRate })
+      }
+    }
+    return {
       baseline,
-      settingsServices,
-    }),
-    [baseline, settingsServices],
-  )
+      settingsServices: [...byId.values()],
+    }
+  }, [baseline, reduxServices, dropdownGstServices])
 }
 
 function isRetentionRow(milestone: ClientPOMilestone): boolean {
@@ -712,6 +752,7 @@ export function ViewClientPODrawer({
       onClose={onClose}
       title={po?.poNumber ?? 'Client PO'}
       subtitle="Purchase order details"
+      hideFooter
     >
       {loadingPo && !po ? (
         <Typography variant="body2" color="text.secondary" sx={{ fontSize: 13, py: 4, textAlign: 'center' }}>

@@ -57,6 +57,35 @@ export interface ProjectDetailApi {
     contactType?: string
     isPrimary?: boolean
   }>
+  vendor?: {
+    id: string
+    vendorName: string
+  } | null
+  vendorContacts?: Array<{
+    id: string
+    name: string
+    designation?: string | null
+    phone?: string | null
+    email?: string | null
+    contactType?: string
+    isPrimary?: boolean
+    vendorId?: string
+    vendorName?: string | null
+  }>
+  /** Grouped multi-vendor Client Team associations (preferred for display). */
+  vendors?: Array<{
+    vendorId: string
+    vendorName: string
+    contacts: Array<{
+      id: string
+      name: string
+      designation?: string | null
+      phone?: string | null
+      email?: string | null
+      contactType?: string
+      isPrimary?: boolean
+    }>
+  }>
   requirements?: {
     notes?: string | null
     document?: unknown
@@ -114,6 +143,7 @@ export interface ProjectCreateFormInput {
   name: string
   contactIds: string[]
   vendorId?: string
+  vendorIds?: string[]
   vendorContactIds?: string[]
   projectTypes: string[]
   sector: string
@@ -189,6 +219,7 @@ export type ProjectCreateApiPayload = {
   customerId: string
   contactIds: string[]
   vendorId?: string
+  vendorIds?: string[]
   vendorContactIds?: string[]
   projectName: string
   projectTypes: string[]

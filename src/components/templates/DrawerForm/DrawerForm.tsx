@@ -33,6 +33,8 @@ interface DrawerFormProps {
   hideHeaderDivider?: boolean
   /** Override header container styles */
   headerSx?: object
+  /** Allow nested Modals/Dialogs to receive focus (e.g. QuickAddVendor inside this drawer). */
+  disableEnforceFocus?: boolean
 }
 
 export function DrawerForm({
@@ -54,6 +56,7 @@ export function DrawerForm({
   hideCloseButton = false,
   hideHeaderDivider = false,
   headerSx = {},
+  disableEnforceFocus = false,
 }: DrawerFormProps) {
   const handleCancel = onCancel ?? onClose
 
@@ -62,6 +65,7 @@ export function DrawerForm({
       anchor="right"
       open={open}
       onClose={onClose}
+      disableEnforceFocus={disableEnforceFocus}
       PaperProps={{
         sx: {
           width: { xs: '100vw', lg: `${width}px` },

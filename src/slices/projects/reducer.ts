@@ -5,16 +5,22 @@ import {
   fetchProjectById,
   createProject,
   updateProject,
+  addProjectVendorAssociation,
   changeProjectStatus,
 } from './thunk'
 
 export interface ContactInfo {
+  id?: string
   name?: string
   designation?: string
   email?: string
   phone?: string
   company?: string
   contact?: string
+  /** Distinguishes customer vs vendor contacts in Client Team UI. */
+  source?: 'customer' | 'vendor'
+  /** Set when assigning a vendor contact to a project (not persisted on display-only rows). */
+  vendorId?: string
 }
 
 export interface ProjectTeamMember {
@@ -107,6 +113,16 @@ export interface Project {
   gstNumber?: string
   projectScope?: string
   chargeableArea?: number | null
+  // Linked vendor (legacy singular — primary/first; prefer vendorContacts / vendors[])
+  vendorId?: string | null
+  vendorName?: string | null
+  vendorContacts?: ContactInfo[]
+  /** Grouped vendors with contacts when API returns `vendors`. */
+  vendors?: Array<{
+    vendorId: string
+    vendorName: string
+    contacts: ContactInfo[]
+  }>
   // Team contacts
   clientTeam?: ContactInfo[]
   projectTeam?: ContactInfo[]
@@ -143,6 +159,8 @@ interface Filters {
   status: string
   type: string
   projectManager: string
+  expectedStartDate: string
+  expectedEndDate: string
 }
 
 interface SortConfig {
@@ -170,7 +188,14 @@ const initialState: ProjectsState = {
   error: null,
   listRequestId: null,
   pagination: { page: 1, pageSize: 10, total: 0 },
-  filters: { search: '', status: '', type: '', projectManager: '' },
+  filters: {
+    search: '',
+    status: '',
+    type: '',
+    projectManager: '',
+    expectedStartDate: '',
+    expectedEndDate: '',
+  },
   sortConfig: { field: null, direction: 'asc' },
 }
 
@@ -252,6 +277,21 @@ const projectsSlice = createSlice({
         }
       })
       .addCase(updateProject.rejected, (state, action) => {
+        state.saving = false
+        state.error = action.payload as string
+      })
+      .addCase(addProjectVendorAssociation.pending, (state) => {
+        state.saving = true
+      })
+      .addCase(addProjectVendorAssociation.fulfilled, (state, action) => {
+        state.saving = false
+        const idx = state.items.findIndex((p) => p.id === action.payload.id)
+        if (idx !== -1) state.items[idx] = action.payload
+        if (state.selectedItem?.id === action.payload.id) {
+          state.selectedItem = action.payload
+        }
+      })
+      .addCase(addProjectVendorAssociation.rejected, (state, action) => {
         state.saving = false
         state.error = action.payload as string
       })

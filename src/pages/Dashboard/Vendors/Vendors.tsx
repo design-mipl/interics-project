@@ -9,7 +9,7 @@
  */
 
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Autocomplete,
   Box,
@@ -56,6 +56,8 @@ import {
   dashboardDateParams,
   type DashboardDateRange,
 } from '../dashboardDateRange'
+import { useDashboardReload } from '../useDashboardReload'
+import { DashboardKpiCardSkeleton, DashboardSectionLoader } from '../DashboardTabLoader'
 
 function projectDurationDays(project: Project): number | null {
   if (!project.startDate) return null
@@ -2255,7 +2257,7 @@ function VendorBillingYearModal({
   )
 }
 
-function VendorKpiCard({ kpi }: { kpi: VendorKpi }) {
+function VendorKpiCard({ kpi, loading = false }: { kpi: VendorKpi; loading?: boolean }) {
   const theme = useTheme()
   const iconMeta = ICON_MAP[kpi.icon]
 
@@ -2274,52 +2276,58 @@ function VendorKpiCard({ kpi }: { kpi: VendorKpi }) {
         bgcolor: 'background.paper',
       }}
     >
-      <Box
-        sx={{
-          display: 'flex',
-          alignItems: 'flex-start',
-          justifyContent: 'space-between',
-          gap: 1,
-        }}
-      >
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          fontWeight={600}
-          sx={{ fontSize: 11, letterSpacing: 0.3, lineHeight: 1.35, pr: 0.5 }}
-        >
-          {kpi.title}
-        </Typography>
-        <Box
-          sx={{
-            width: 34,
-            height: 34,
-            borderRadius: '8px',
-            flexShrink: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            bgcolor: alpha(iconMeta.color, theme.palette.mode === 'dark' ? 0.2 : 0.1),
-            color: iconMeta.color,
-          }}
-        >
-          {iconMeta.node}
-        </Box>
-      </Box>
+      {loading ? (
+        <DashboardKpiCardSkeleton />
+      ) : (
+        <>
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: 1,
+            }}
+          >
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              fontWeight={600}
+              sx={{ fontSize: 11, letterSpacing: 0.3, lineHeight: 1.35, pr: 0.5 }}
+            >
+              {kpi.title}
+            </Typography>
+            <Box
+              sx={{
+                width: 34,
+                height: 34,
+                borderRadius: '8px',
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                bgcolor: alpha(iconMeta.color, theme.palette.mode === 'dark' ? 0.2 : 0.1),
+                color: iconMeta.color,
+              }}
+            >
+              {iconMeta.node}
+            </Box>
+          </Box>
 
-      <Typography
-        variant="h5"
-        fontWeight={700}
-        sx={{ fontSize: { xs: 18, md: 20 }, lineHeight: 1.2, letterSpacing: -0.3 }}
-      >
-        {kpi.value}
-      </Typography>
+          <Typography
+            variant="h5"
+            fontWeight={700}
+            sx={{ fontSize: { xs: 18, md: 20 }, lineHeight: 1.2, letterSpacing: -0.3 }}
+          >
+            {kpi.value}
+          </Typography>
 
-      {kpi.subtitle ? (
-        <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, mt: 'auto' }}>
-          {kpi.subtitle}
-        </Typography>
-      ) : null}
+          {kpi.subtitle ? (
+            <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, mt: 'auto' }}>
+              {kpi.subtitle}
+            </Typography>
+          ) : null}
+        </>
+      )}
     </Paper>
   )
 }
@@ -2356,7 +2364,7 @@ export function VendorsTab({
     useState<VendorProjectPerformanceSourceBundle | null>(null)
   const [serverVendorInvoicePoTotal, setServerVendorInvoicePoTotal] = useState<number | null>(null)
   const [serverTotalVendorPoValue, setServerTotalVendorPoValue] = useState<number | null>(null)
-  const [billingOverYearsLoading, setBillingOverYearsLoading] = useState(false)
+  const [billingOverYearsLoading, setBillingOverYearsLoading] = useState(true)
   const requestParams = useMemo(() => dashboardDateParams(dateRange), [dateRange])
 
   const vendorInvoicePoTotal = useMemo(
@@ -2455,15 +2463,15 @@ export function VendorsTab({
     void dispatch(fetchProjects({ page: 1, pageSize: 500 }))
   }, [dispatch])
 
-  useEffect(() => {
-    let isMounted = true
-
-    async function loadVendorsDashboard() {
+  const loadVendorsDashboard = useCallback(
+    async (isActive: () => boolean) => {
       setBillingOverYearsLoading(true)
       try {
-        const response = await client.get('/dashboard/vendors', { params: requestParams })
+        const response = await client.get('/dashboard/vendors', {
+          params: requestParams,
+        })
         const data = unwrapApiData<VendorsDashboardResponse>(response.data)
-        if (!isMounted) return
+        if (!isActive()) return
         setBillingOverYears(asVendorBillingOverYears(data.data?.vendorBillingOverYears))
         setServerVendorInvoicePoTotal(toFiniteNumber(data.data?.vendorInvoicePoTotal))
         setServerTotalVendorPoValue(toFiniteNumber(data.data?.totalVendorPoValue))
@@ -2471,22 +2479,21 @@ export function VendorsTab({
           asVendorProjectPerformanceSource(data.data?.vendorProjectPerformance),
         )
       } catch {
-        if (!isMounted) return
-        setBillingOverYears([])
-        setServerVendorInvoicePoTotal(null)
-        setServerTotalVendorPoValue(null)
-        setServerProjectPerformance(null)
+        // Keep last successful payload so a raced/failed refetch cannot blank charts.
+        if (!isActive()) return
       } finally {
-        if (isMounted) setBillingOverYearsLoading(false)
+        if (isActive()) setBillingOverYearsLoading(false)
       }
-    }
+    },
+    [requestParams],
+  )
 
-    void loadVendorsDashboard()
+  useDashboardReload(loadVendorsDashboard, [loadVendorsDashboard])
 
-    return () => {
-      isMounted = false
-    }
-  }, [requestParams])
+  const showInitialLoader =
+    billingOverYearsLoading &&
+    serverProjectPerformance == null &&
+    billingOverYears.length === 0
 
   useEffect(() => {
     if (!selectedBillingYear) return
@@ -2586,11 +2593,34 @@ export function VendorsTab({
       <Grid container spacing={2} sx={{ mb: 2.5 }}>
         {analytics.kpis.map((kpi) => (
           <Grid key={kpi.id} size={{ xs: 12, sm: 6 }}>
-            <VendorKpiCard kpi={kpi} />
+            <VendorKpiCard kpi={kpi} loading={showInitialLoader} />
           </Grid>
         ))}
       </Grid>
 
+      {showInitialLoader ? (
+        <>
+          <Box sx={{ mb: 2 }}>
+            <ChartCard
+              title="Vendor Project Performance"
+              subtitle="Compare vendor project counts and vendor PO amount by vendor."
+            >
+              <DashboardSectionLoader minHeight={280} />
+            </ChartCard>
+          </Box>
+          <Grid container spacing={2}>
+            <Grid size={{ xs: 12 }}>
+              <ChartCard
+                title="Total Vendor Billing Over the Years"
+                subtitle="Year-wise vendor payment totals"
+              >
+                <DashboardSectionLoader minHeight={280} />
+              </ChartCard>
+            </Grid>
+          </Grid>
+        </>
+      ) : (
+        <>
       <Box sx={{ mb: 2 }}>
         <ChartCard
           title="Vendor Project Performance"
@@ -2803,6 +2833,8 @@ export function VendorsTab({
         vendor={projectBillingVendor}
         onClose={() => setProjectBillingVendor(null)}
       />
+        </>
+      )}
     </Box>
   )
 }

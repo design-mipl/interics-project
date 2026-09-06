@@ -203,7 +203,7 @@ export function getDefaultContactId(contacts: Contact[]): string {
 }
 
 /** True for persisted contact UUIDs — excludes UI placeholders like `legacy-primary`. */
-export function isPersistedContactId(id: string | null | undefined): boolean {
+export function isPersistedContactId(id: string | null | undefined): id is string {
   if (!id?.trim()) return false
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     id.trim(),

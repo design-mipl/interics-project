@@ -1,9 +1,10 @@
 ﻿/**
  * Dashboard page shell. Tab internals live in their own tab folders.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { Box, Paper, Typography } from '@mui/material'
-import { Tabs } from '@/design-system/components'
+import { Tabs, isoFromDate } from '@/design-system/components'
 import { RevenueTab } from './Revenue/Revenue'
 import { ProjectsTab } from './Projects/Projects'
 import { TeamTab } from './Teams/Teams'
@@ -19,6 +20,8 @@ type DashboardTab = 'revenue' | 'projects' | 'team' | 'vendors'
 type DashboardDateRanges = Record<DashboardTab, DashboardDateRange>
 type DashboardDatePeriods = Record<DashboardTab, DashboardDatePeriod>
 
+const DASHBOARD_TAB_KEYS: DashboardTab[] = ['revenue', 'projects', 'team', 'vendors']
+
 const DASHBOARD_TABS = [
   { label: 'Revenue', value: 'revenue' },
   { label: 'Projects', value: 'projects' },
@@ -26,7 +29,16 @@ const DASHBOARD_TABS = [
   { label: 'Vendors', value: 'vendors' },
 ] as const
 
+function isRelativeDashboardPeriod(period: DashboardDatePeriod): boolean {
+  return period === 'This Month' || period === 'Last 6 Months' || period === 'This Financial Year'
+}
+
+function sameDashboardRange(a: DashboardDateRange, b: DashboardDateRange): boolean {
+  return isoFromDate(a[0]) === isoFromDate(b[0]) && isoFromDate(a[1]) === isoFromDate(b[1])
+}
+
 export default function DashboardPage() {
+  const location = useLocation()
   const [activeTab, setActiveTab] = useState<DashboardTab>('revenue')
   const [dateRanges, setDateRanges] = useState<DashboardDateRanges>(() => ({
     revenue: getCurrentFinancialYearRange(),
@@ -40,6 +52,26 @@ export default function DashboardPage() {
     team: 'This Financial Year',
     vendors: 'This Financial Year',
   }))
+
+  // Refresh rolling preset ranges only when navigating back to Dashboard.
+  useEffect(() => {
+    setDateRanges((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const tab of DASHBOARD_TAB_KEYS) {
+        const period = datePeriods[tab]
+        if (!isRelativeDashboardPeriod(period)) continue
+        const refreshed = getDashboardPeriodRange(period)
+        if (!sameDashboardRange(prev[tab], refreshed)) {
+          next[tab] = refreshed
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+    // Intentionally only when the route entry changes; period changes update ranges directly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- datePeriods read from latest render via closure on location.key
+  }, [location.key])
 
   const setTabDateRange = (tab: DashboardTab, range: DashboardDateRange) => {
     setDateRanges((prev) => ({ ...prev, [tab]: range }))

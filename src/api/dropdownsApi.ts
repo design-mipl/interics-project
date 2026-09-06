@@ -23,6 +23,7 @@ export type DropdownOption = {
 
 export type ServiceDropdownOption = DropdownOption & {
   categoryId: string
+  gstRate: number
 }
 
 export const dropdownsApi = {

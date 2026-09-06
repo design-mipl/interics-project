@@ -163,12 +163,40 @@ export function toProjectFromDetail(api: ProjectDetailApi): Project {
     sector: setup.sector,
     designFeePerSqft: setup.designFeePerSqFt ?? null,
     buildValuePerSqft: setup.buildValuePerSqFt ?? null,
+    vendorId: api.vendor?.id ?? null,
+    vendorName: api.vendor?.vendorName ?? null,
+    vendorContacts: (api.vendorContacts ?? []).map((contact) => ({
+      id: contact.id,
+      name: contact.name,
+      designation: contact.designation ?? undefined,
+      phone: contact.phone ?? undefined,
+      email: contact.email ?? undefined,
+      company: contact.vendorName ?? api.vendor?.vendorName,
+      source: 'vendor' as const,
+      vendorId: contact.vendorId,
+    })),
+    vendors: (api.vendors ?? []).map((group) => ({
+      vendorId: group.vendorId,
+      vendorName: group.vendorName,
+      contacts: group.contacts.map((contact) => ({
+        id: contact.id,
+        name: contact.name,
+        designation: contact.designation ?? undefined,
+        phone: contact.phone ?? undefined,
+        email: contact.email ?? undefined,
+        company: group.vendorName,
+        source: 'vendor' as const,
+        vendorId: group.vendorId,
+      })),
+    })),
     clientTeam: (api.contacts ?? []).map((contact) => ({
+      id: contact.id,
       name: contact.name,
       designation: contact.designation ?? undefined,
       phone: contact.phone ?? undefined,
       email: contact.email ?? undefined,
       company: customer.customerName,
+      source: 'customer' as const,
     })),
   }
 }
@@ -196,11 +224,14 @@ export function toCreatePayload(form: ProjectCreateFormInput): ProjectCreateApiP
   const uuidRe =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
   const vendorContactIds = [...new Set((form.vendorContactIds ?? []).filter((id) => uuidRe.test(id)))]
+  const vendorIds = [...new Set((form.vendorIds ?? []).filter((id) => Boolean(id?.trim())))]
+  const vendorId = form.vendorId?.trim() || vendorIds[0] || undefined
 
   return {
     customerId: form.customerId,
     contactIds: form.contactIds,
-    ...(form.vendorId ? { vendorId: form.vendorId } : {}),
+    ...(vendorId ? { vendorId } : {}),
+    ...(vendorIds.length ? { vendorIds } : {}),
     ...(vendorContactIds.length ? { vendorContactIds } : {}),
     projectName: form.name.trim(),
     projectTypes: form.projectTypes,
@@ -235,7 +266,9 @@ export function toCreatePayload(form: ProjectCreateFormInput): ProjectCreateApiP
   }
 }
 
-export function toUpdatePayload(data: Partial<Project> & { contactIds?: string[] }): Record<string, unknown> {
+export function toUpdatePayload(
+  data: Partial<Project> & { contactIds?: string[]; vendorContactIds?: string[] },
+): Record<string, unknown> {
   const payload: Record<string, unknown> = {}
 
   if (data.name !== undefined) payload.projectName = data.name.trim()
@@ -295,6 +328,13 @@ export function toUpdatePayload(data: Partial<Project> & { contactIds?: string[]
     payload.buildValuePerSqFt = optionalNumber(data.buildValuePerSqft) ?? null
   }
   if (data.projectManagerId !== undefined) payload.projectLeadId = data.projectManagerId
+
+  if (data.vendorId !== undefined) {
+    payload.vendorId = data.vendorId === null || data.vendorId === '' ? null : data.vendorId
+  }
+  if (data.vendorContactIds !== undefined) {
+    payload.vendorContactIds = data.vendorContactIds
+  }
 
   if (data.assignedTeam !== undefined || data.projectManagerId !== undefined) {
     const leadId = (data.projectManagerId ?? '').trim()

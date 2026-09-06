@@ -468,6 +468,18 @@ export default function ProjectManagementTab({ project }: ProjectManagementTabPr
                 variant="outlined"
                 color="secondary"
                 size="sm"
+                label="Cancel"
+                onClick={() => {
+                  setDraft(buildDraftFromCategories(categories))
+                  setIsEditing(false)
+                }}
+                disabled={!isEditing}
+                sx={{ height: 32 }}
+              />
+              <Button
+                variant="outlined"
+                color="secondary"
+                size="sm"
                 label="Update"
                 onClick={handleUpdate}
                 disabled={totalCheckpoints === 0 || isEditing}

@@ -15,11 +15,10 @@ export type UploadCategory =
   | 'internal_attachments'
   | 'other'
 
-/** Former "Internal" tab uploads — surfaced under Project Documents. */
+/** Former "Internal" tab uploads — surfaced under Project Documents (not Others). */
 export const LEGACY_INTERNAL_UPLOAD_CATEGORIES: UploadCategory[] = [
   'internal_requirements',
   'internal_attachments',
-  'other',
 ]
 
 export function isLegacyInternalUploadCategory(
