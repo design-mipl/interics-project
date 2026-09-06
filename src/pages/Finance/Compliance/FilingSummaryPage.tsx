@@ -169,7 +169,7 @@ function sortByField<T>(
   sortField: string | undefined,
   sortDirection: 'asc' | 'desc',
   resolve: (row: T, field: string) => unknown = (row, field) =>
-    (row as Record<string, unknown>)[field],
+    (row as unknown as Record<string, unknown>)[field],
 ) {
   if (!sortField) return rows
   return [...rows].sort((a, b) =>
@@ -523,7 +523,7 @@ export default function FilingSummaryPage() {
           return row.invoiceNumber?.trim() || row.referenceNumber?.trim() || '—'
         }
         if (field === 'status') return row.status || 'paid'
-        return (row as Record<string, unknown>)[field]
+        return (row as unknown as Record<string, unknown>)[field]
       },
     )
   }, [vendorTdsEntries, listingControlsByTab.vendorTds])
@@ -547,7 +547,7 @@ export default function FilingSummaryPage() {
       listingControlsByTab.all.sortDirection,
       (row, field) => {
         if (field === 'type') return row.typeLabel
-        return (row as Record<string, unknown>)[field]
+        return (row as unknown as Record<string, unknown>)[field]
       },
     )
   }, [allMergedRows, listingControlsByTab.all])

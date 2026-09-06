@@ -43,6 +43,7 @@ import {
   financialYearSelectOptions,
   hasActiveListingControls,
   indianFyQuarterLabel,
+  listingFieldValue,
   matchesDateFilter,
   matchesExactFilter,
   parseChartPeriod,
@@ -297,7 +298,7 @@ export default function TDSPage() {
           return row.invoiceNumber?.trim() || row.referenceNumber?.trim() || '—'
         }
         if (field === 'status') return row.status || 'paid'
-        return (row as Record<string, unknown>)[field]
+        return listingFieldValue(row, field)
       },
     )
   }, [vendorRows, listingControlsByTab.vendor])

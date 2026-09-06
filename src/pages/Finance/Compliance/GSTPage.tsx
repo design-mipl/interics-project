@@ -44,6 +44,7 @@ import {
   financialYearSelectOptions,
   hasActiveListingControls,
   indianFyQuarterLabel,
+  listingFieldValue,
   matchesDateFilter,
   matchesExactFilter,
   parseChartPeriod,
@@ -317,7 +318,7 @@ export default function GSTPage() {
         if (field === 'avgGstRate') {
           return row.baseAmount > 0 ? Math.round((100 * row.gstAmount) / row.baseAmount) : -1
         }
-        return (row as Record<string, unknown>)[field]
+        return listingFieldValue(row, field)
       },
     )
   }, [projectRows, listingControlsByTab.project])
@@ -337,7 +338,7 @@ export default function GSTPage() {
       listingControlsByTab.month.sortDirection,
       (row, field) => {
         if (field === 'period') return `${row.year}-${String(row.month).padStart(2, '0')}`
-        return (row as Record<string, unknown>)[field]
+        return listingFieldValue(row, field)
       },
     )
   }, [monthRows, listingControlsByTab.month])

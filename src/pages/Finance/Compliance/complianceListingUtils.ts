@@ -42,12 +42,16 @@ export function matchesDateFilter(filter: string | undefined, iso: string) {
   return iso.slice(0, 10) === filter.slice(0, 10)
 }
 
+export function listingFieldValue(row: object, field: string): unknown {
+  return (row as unknown as Record<string, unknown>)[field]
+}
+
 export function sortByField<T>(
   rows: T[],
   sortField: string | undefined,
   sortDirection: 'asc' | 'desc',
   resolve: (row: T, field: string) => unknown = (row, field) =>
-    (row as Record<string, unknown>)[field],
+    listingFieldValue(row as object, field),
 ) {
   if (!sortField) return rows
   return [...rows].sort((a, b) =>
