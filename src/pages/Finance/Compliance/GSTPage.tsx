@@ -25,6 +25,7 @@ import { Receipt } from 'lucide-react'
 import { Button, Drawer, Select, StatusBadge } from '@/design-system/components'
 import type { StatusType } from '@/design-system/components'
 import { tokens } from '@/design-system/tokens'
+import { FilterableSortHeader } from '@/components/listing'
 import { financeApi } from '@/api/financeApi'
 import { unwrapApiData, unwrapApiList } from '@/modules/system-settings/shared/api'
 import type {
@@ -37,6 +38,21 @@ import type {
   GstSummary,
 } from '@/slices/finance/types'
 import { formatDate, formatInr } from '@/utils/formatters'
+import {
+  currentIndianFyStartYear,
+  emptyListingControls,
+  financialYearSelectOptions,
+  hasActiveListingControls,
+  indianFyQuarterLabel,
+  matchesDateFilter,
+  matchesExactFilter,
+  parseChartPeriod,
+  percentFilterOptions,
+  selectedFyHeading,
+  sortByField,
+  uniqueFilterOptions,
+  type ListingControls,
+} from './complianceListingUtils'
 
 const CHART_GST = '#1D9E75'
 
@@ -60,20 +76,11 @@ const TABLE_CELL_SX = {
 
 type PeriodMode = 'monthly' | 'quarterly'
 
-function parseChartPeriod(period: string): Date | null {
-  const match = period.trim().match(/^([A-Za-z]{3})\s+(\d{2})$/)
-  if (!match) return null
-  const parsed = new Date(`${match[1]} 1, 20${match[2]}`)
-  return Number.isNaN(parsed.getTime()) ? null : parsed
-}
-
 function groupGstChartByQuarter(rows: GstChartPoint[]): GstChartPoint[] {
   const map = new Map<string, GstChartPoint>()
   for (const row of rows) {
     const parsed = parseChartPeriod(row.period)
-    const label = parsed
-      ? `Q${Math.floor(parsed.getMonth() / 3) + 1} ${parsed.getFullYear()}`
-      : row.period
+    const label = parsed ? indianFyQuarterLabel(parsed) : row.period
     const prev = map.get(label) ?? { period: label, gst: 0 }
     prev.gst += row.gst
     map.set(label, prev)
@@ -122,14 +129,33 @@ export default function GSTPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [periodMode, setPeriodMode] = useState<PeriodMode>('monthly')
+  const [fyStartYear, setFyStartYear] = useState(() => currentIndianFyStartYear())
+  const fyOptions = useMemo(() => financialYearSelectOptions(), [])
   const [tableTab, setTableTab] = useState<GstListType>('invoice')
   const [drawerEntry, setDrawerEntry] = useState<GlobalGstEntry | null>(null)
+  const [listingControlsByTab, setListingControlsByTab] = useState<
+    Record<GstListType, ListingControls>
+  >(() => ({
+    invoice: emptyListingControls(),
+    project: emptyListingControls(),
+    month: emptyListingControls(),
+  }))
+
+  const listingControls = listingControlsByTab[tableTab]
+  const sortField = listingControls.sortField
+  const sortDirection = listingControls.sortDirection
+  const colFilters = listingControls.filters
 
   const scopeParams = useMemo(() => {
     const p: Record<string, string | undefined> = {}
     if (filterProjectId) p.projectId = filterProjectId
     return p
   }, [filterProjectId])
+
+  const chartParams = useMemo(
+    () => ({ ...scopeParams, fyStartYear: String(fyStartYear) }),
+    [scopeParams, fyStartYear],
+  )
 
   useEffect(() => {
     void (async () => {
@@ -149,8 +175,8 @@ export default function GSTPage() {
     try {
       const [summaryRes, chartRes, breakdownRes] = await Promise.all([
         financeApi.getGstSummary(scopeParams),
-        financeApi.getGstChart(scopeParams),
-        financeApi.getGstPeriodBreakdown(scopeParams),
+        financeApi.getGstChart(chartParams),
+        financeApi.getGstPeriodBreakdown(chartParams),
       ])
       setKpis(unwrapApiData<GstSummary>(summaryRes.data))
       setMonthlyChart(unwrapApiList<GstChartPoint>(chartRes.data))
@@ -163,7 +189,7 @@ export default function GSTPage() {
     } finally {
       setLoading(false)
     }
-  }, [scopeParams])
+  }, [scopeParams, chartParams])
 
   const loadTable = useCallback(async () => {
     try {
@@ -211,31 +237,137 @@ export default function GSTPage() {
     return rows
   }, [breakdown?.byProject])
 
-  const footerInvoice = useMemo(() => {
-    const base = invoiceRows.reduce((s, e) => s + e.baseAmount, 0)
-    const gst = invoiceRows.reduce((s, e) => s + e.gstAmount, 0)
-    return { base, gst }
-  }, [invoiceRows])
+  const invoiceFilterOptions = useMemo(
+    () => ({
+      invoiceNumber: uniqueFilterOptions(invoiceRows.map((e) => e.invoiceNumber)),
+      projectName: uniqueFilterOptions(invoiceRows.map((e) => e.projectName)),
+      clientName: uniqueFilterOptions(invoiceRows.map((e) => e.clientName)),
+      invoiceDate: uniqueFilterOptions(invoiceRows.map((e) => e.invoiceDate.slice(0, 10))),
+      baseAmount: uniqueFilterOptions(invoiceRows.map((e) => e.baseAmount)),
+      gstRate: percentFilterOptions(invoiceRows.map((e) => e.gstRate)),
+      gstAmount: uniqueFilterOptions(invoiceRows.map((e) => e.gstAmount)),
+      status: uniqueFilterOptions(invoiceRows.map((e) => e.status)),
+    }),
+    [invoiceRows],
+  )
 
-  const footerProject = useMemo(() => {
-    const invoiceCount = projectRows.reduce((s, r) => s + r.invoiceCount, 0)
-    const totalBase = projectRows.reduce((s, r) => s + r.baseAmount, 0)
-    const totalGst = projectRows.reduce((s, r) => s + r.gstAmount, 0)
-    return { invoiceCount, totalBase, totalGst }
+  const projectFilterOptions = useMemo(() => {
+    const avgRates = projectRows.map((r) =>
+      r.baseAmount > 0 ? Math.round((100 * r.gstAmount) / r.baseAmount) : '—',
+    )
+    return {
+      projectName: uniqueFilterOptions(projectRows.map((e) => e.projectName)),
+      clientName: uniqueFilterOptions(projectRows.map((e) => e.clientName)),
+      invoiceCount: uniqueFilterOptions(projectRows.map((e) => e.invoiceCount)),
+      baseAmount: uniqueFilterOptions(projectRows.map((e) => e.baseAmount)),
+      gstAmount: uniqueFilterOptions(projectRows.map((e) => e.gstAmount)),
+      avgGstRate: uniqueFilterOptions(avgRates),
+    }
   }, [projectRows])
 
-  const footerMonth = useMemo(() => {
-    const invoiceCount = monthRows.reduce((s, r) => s + r.invoiceCount, 0)
-    const totalBase = monthRows.reduce((s, r) => s + r.baseAmount, 0)
-    const totalGst = monthRows.reduce((s, r) => s + r.gstAmount, 0)
+  const monthFilterOptions = useMemo(
+    () => ({
+      period: uniqueFilterOptions(monthRows.map((e) => e.period)),
+      invoiceCount: uniqueFilterOptions(monthRows.map((e) => e.invoiceCount)),
+      baseAmount: uniqueFilterOptions(monthRows.map((e) => e.baseAmount)),
+      gstAmount: uniqueFilterOptions(monthRows.map((e) => e.gstAmount)),
+    }),
+    [monthRows],
+  )
+
+  const displayedInvoiceRows = useMemo(() => {
+    const f = listingControlsByTab.invoice.filters
+    const rows = invoiceRows.filter(
+      (e) =>
+        matchesExactFilter(f.invoiceNumber, e.invoiceNumber) &&
+        matchesExactFilter(f.projectName, e.projectName) &&
+        matchesExactFilter(f.clientName, e.clientName) &&
+        matchesDateFilter(f.invoiceDate, e.invoiceDate) &&
+        matchesExactFilter(f.baseAmount, e.baseAmount) &&
+        matchesExactFilter(f.gstRate, e.gstRate) &&
+        matchesExactFilter(f.gstAmount, e.gstAmount) &&
+        matchesExactFilter(f.status, e.status),
+    )
+    return sortByField(
+      rows,
+      listingControlsByTab.invoice.sortField,
+      listingControlsByTab.invoice.sortDirection,
+    )
+  }, [invoiceRows, listingControlsByTab.invoice])
+
+  const displayedProjectRows = useMemo(() => {
+    const f = listingControlsByTab.project.filters
+    const rows = projectRows.filter((e) => {
+      const avg =
+        e.baseAmount > 0 ? String(Math.round((100 * e.gstAmount) / e.baseAmount)) : '—'
+      return (
+        matchesExactFilter(f.projectName, e.projectName) &&
+        matchesExactFilter(f.clientName, e.clientName) &&
+        matchesExactFilter(f.invoiceCount, e.invoiceCount) &&
+        matchesExactFilter(f.baseAmount, e.baseAmount) &&
+        matchesExactFilter(f.gstAmount, e.gstAmount) &&
+        matchesExactFilter(f.avgGstRate, avg)
+      )
+    })
+    return sortByField(
+      rows,
+      listingControlsByTab.project.sortField,
+      listingControlsByTab.project.sortDirection,
+      (row, field) => {
+        if (field === 'avgGstRate') {
+          return row.baseAmount > 0 ? Math.round((100 * row.gstAmount) / row.baseAmount) : -1
+        }
+        return (row as Record<string, unknown>)[field]
+      },
+    )
+  }, [projectRows, listingControlsByTab.project])
+
+  const displayedMonthRows = useMemo(() => {
+    const f = listingControlsByTab.month.filters
+    const rows = monthRows.filter(
+      (e) =>
+        matchesExactFilter(f.period, e.period) &&
+        matchesExactFilter(f.invoiceCount, e.invoiceCount) &&
+        matchesExactFilter(f.baseAmount, e.baseAmount) &&
+        matchesExactFilter(f.gstAmount, e.gstAmount),
+    )
+    return sortByField(
+      rows,
+      listingControlsByTab.month.sortField,
+      listingControlsByTab.month.sortDirection,
+      (row, field) => {
+        if (field === 'period') return `${row.year}-${String(row.month).padStart(2, '0')}`
+        return (row as Record<string, unknown>)[field]
+      },
+    )
+  }, [monthRows, listingControlsByTab.month])
+
+  const footerInvoice = useMemo(() => {
+    const base = displayedInvoiceRows.reduce((s, e) => s + e.baseAmount, 0)
+    const gst = displayedInvoiceRows.reduce((s, e) => s + e.gstAmount, 0)
+    return { base, gst }
+  }, [displayedInvoiceRows])
+
+  const footerProject = useMemo(() => {
+    const invoiceCount = displayedProjectRows.reduce((s, r) => s + r.invoiceCount, 0)
+    const totalBase = displayedProjectRows.reduce((s, r) => s + r.baseAmount, 0)
+    const totalGst = displayedProjectRows.reduce((s, r) => s + r.gstAmount, 0)
     return { invoiceCount, totalBase, totalGst }
-  }, [monthRows])
+  }, [displayedProjectRows])
+
+  const footerMonth = useMemo(() => {
+    const invoiceCount = displayedMonthRows.reduce((s, r) => s + r.invoiceCount, 0)
+    const totalBase = displayedMonthRows.reduce((s, r) => s + r.baseAmount, 0)
+    const totalGst = displayedMonthRows.reduce((s, r) => s + r.gstAmount, 0)
+    return { invoiceCount, totalBase, totalGst }
+  }, [displayedMonthRows])
 
   async function exportCurrentTab() {
     try {
       const res = await financeApi.exportGst({
         type: tableTab,
         ...(filterProjectId ? { projectId: filterProjectId } : {}),
+        ...(sortField ? { sortBy: sortField, sortOrder: sortDirection } : {}),
       })
       downloadBlob(
         res.data as Blob,
@@ -245,6 +377,37 @@ export default function GSTPage() {
       setError('Could not export GST data.')
     }
   }
+
+  function handleSort(field: string, direction: 'asc' | 'desc') {
+    setListingControlsByTab((prev) => ({
+      ...prev,
+      [tableTab]: { ...prev[tableTab], sortField: field, sortDirection: direction },
+    }))
+  }
+
+  function handleColumnFilter(field: string) {
+    return (value: string) => {
+      setListingControlsByTab((prev) => {
+        const current = prev[tableTab]
+        const nextFilters = { ...current.filters }
+        if (!value) delete nextFilters[field]
+        else nextFilters[field] = value
+        return {
+          ...prev,
+          [tableTab]: { ...current, filters: nextFilters },
+        }
+      })
+    }
+  }
+
+  function resetListingControls() {
+    setListingControlsByTab((prev) => ({
+      ...prev,
+      [tableTab]: emptyListingControls(),
+    }))
+  }
+
+  const hasListingControls = hasActiveListingControls(listingControls)
 
   const pillSx = (active: boolean) => ({
     border: '1px solid',
@@ -362,7 +525,17 @@ export default function GSTPage() {
             <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
               GST by Month
             </Typography>
-            <Stack direction="row" gap={0.75}>
+            <Stack direction="row" gap={0.75} alignItems="center" flexWrap="wrap">
+              <Select
+                size="sm"
+                value={String(fyStartYear)}
+                onChange={(v) => {
+                  const next = Number(v)
+                  if (Number.isInteger(next)) setFyStartYear(next)
+                }}
+                options={fyOptions}
+                sx={{ minWidth: 180 }}
+              />
               <Box
                 component="button"
                 type="button"
@@ -416,7 +589,17 @@ export default function GSTPage() {
           <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1.5 }}>
             By Project
           </Typography>
-          <Box sx={{ mb: 2 }}>
+          <Stack spacing={1} sx={{ mb: 2 }}>
+            <Select
+              size="sm"
+              fullWidth
+              value={String(fyStartYear)}
+              onChange={(v) => {
+                const next = Number(v)
+                if (Number.isInteger(next)) setFyStartYear(next)
+              }}
+              options={fyOptions}
+            />
             <Select
               placeholder="All"
               size="sm"
@@ -426,7 +609,7 @@ export default function GSTPage() {
               onChange={(v) => setFilterProjectId(v ? String(v) : '')}
               options={projectOptions}
             />
-          </Box>
+          </Stack>
 
           <Stack spacing={2}>
             {loading && (
@@ -471,7 +654,7 @@ export default function GSTPage() {
           <Box sx={{ borderTop: `1px solid ${tokens.color.neutral[100]}`, mt: 2, pt: 2 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center">
               <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                This FY Total ({breakdown?.fy.label ?? '—'})
+                {selectedFyHeading(fyStartYear)}
               </Typography>
               <Typography variant="body2" sx={{ fontWeight: 700 }}>
                 ₹{formatInr(breakdown?.fy.gstTotal ?? 0)}
@@ -503,9 +686,16 @@ export default function GSTPage() {
               </Box>
             ))}
           </Stack>
-          <Button variant="outlined" color="secondary" size="sm" onClick={() => void exportCurrentTab()}>
-            Export CSV
-          </Button>
+          <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
+            {hasListingControls ? (
+              <Button variant="outlined" color="secondary" size="sm" onClick={resetListingControls}>
+                Reset filters
+              </Button>
+            ) : null}
+            <Button variant="outlined" color="secondary" size="sm" onClick={() => void exportCurrentTab()}>
+              Export CSV
+            </Button>
+          </Stack>
         </Stack>
 
         <Table size="small">
@@ -513,14 +703,95 @@ export default function GSTPage() {
             <>
               <TableHead>
                 <TableRow>
-                  <TableCell sx={TABLE_HEADER_SX}>Invoice no.</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Project</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Client</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Invoice date</TableCell>
-                  <TableCell sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}>Base amount</TableCell>
-                  <TableCell sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}>GST rate</TableCell>
-                  <TableCell sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}>GST amount</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Status</TableCell>
+                  <FilterableSortHeader
+                    label="Invoice no."
+                    field="invoiceNumber"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.invoiceNumber ?? ''}
+                    filterOptions={invoiceFilterOptions.invoiceNumber}
+                    onFilter={handleColumnFilter('invoiceNumber')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Project"
+                    field="projectName"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.projectName ?? ''}
+                    filterOptions={invoiceFilterOptions.projectName}
+                    onFilter={handleColumnFilter('projectName')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Client"
+                    field="clientName"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.clientName ?? ''}
+                    filterOptions={invoiceFilterOptions.clientName}
+                    onFilter={handleColumnFilter('clientName')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Invoice date"
+                    field="invoiceDate"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterMode="date"
+                    filterValue={colFilters.invoiceDate ?? ''}
+                    filterOptions={invoiceFilterOptions.invoiceDate}
+                    onFilter={handleColumnFilter('invoiceDate')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Base amount"
+                    field="baseAmount"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.baseAmount ?? ''}
+                    filterOptions={invoiceFilterOptions.baseAmount}
+                    onFilter={handleColumnFilter('baseAmount')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="GST rate"
+                    field="gstRate"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.gstRate ?? ''}
+                    filterOptions={invoiceFilterOptions.gstRate}
+                    onFilter={handleColumnFilter('gstRate')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="GST amount"
+                    field="gstAmount"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.gstAmount ?? ''}
+                    filterOptions={invoiceFilterOptions.gstAmount}
+                    onFilter={handleColumnFilter('gstAmount')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="Status"
+                    field="status"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.status ?? ''}
+                    filterOptions={invoiceFilterOptions.status}
+                    onFilter={handleColumnFilter('status')}
+                    sx={TABLE_HEADER_SX}
+                  />
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -530,14 +801,14 @@ export default function GSTPage() {
                       Loading…
                     </TableCell>
                   </TableRow>
-                ) : invoiceRows.length === 0 ? (
+                ) : displayedInvoiceRows.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={8} sx={{ ...TABLE_CELL_SX, py: 4, textAlign: 'center' }}>
                       No invoices.
                     </TableCell>
                   </TableRow>
                 ) : (
-                  invoiceRows.map((e) => (
+                  displayedInvoiceRows.map((e) => (
                     <TableRow key={e.invoiceId} hover>
                       <TableCell sx={TABLE_CELL_SX}>
                         <Button
@@ -585,12 +856,72 @@ export default function GSTPage() {
             <>
               <TableHead>
                 <TableRow>
-                  <TableCell sx={TABLE_HEADER_SX}>Project</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Client</TableCell>
-                  <TableCell sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}>Invoice count</TableCell>
-                  <TableCell sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}>Total base</TableCell>
-                  <TableCell sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}>Total GST</TableCell>
-                  <TableCell sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}>Avg GST rate</TableCell>
+                  <FilterableSortHeader
+                    label="Project"
+                    field="projectName"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.projectName ?? ''}
+                    filterOptions={projectFilterOptions.projectName}
+                    onFilter={handleColumnFilter('projectName')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Client"
+                    field="clientName"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.clientName ?? ''}
+                    filterOptions={projectFilterOptions.clientName}
+                    onFilter={handleColumnFilter('clientName')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Invoice count"
+                    field="invoiceCount"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.invoiceCount ?? ''}
+                    filterOptions={projectFilterOptions.invoiceCount}
+                    onFilter={handleColumnFilter('invoiceCount')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="Total base"
+                    field="baseAmount"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.baseAmount ?? ''}
+                    filterOptions={projectFilterOptions.baseAmount}
+                    onFilter={handleColumnFilter('baseAmount')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="Total GST"
+                    field="gstAmount"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.gstAmount ?? ''}
+                    filterOptions={projectFilterOptions.gstAmount}
+                    onFilter={handleColumnFilter('gstAmount')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="Avg GST rate"
+                    field="avgGstRate"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.avgGstRate ?? ''}
+                    filterOptions={projectFilterOptions.avgGstRate}
+                    onFilter={handleColumnFilter('avgGstRate')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -600,14 +931,14 @@ export default function GSTPage() {
                       Loading…
                     </TableCell>
                   </TableRow>
-                ) : projectRows.length === 0 ? (
+                ) : displayedProjectRows.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={6} sx={{ ...TABLE_CELL_SX, py: 4, textAlign: 'center' }}>
                       No data.
                     </TableCell>
                   </TableRow>
                 ) : (
-                  projectRows.map((r) => (
+                  displayedProjectRows.map((r) => (
                     <TableRow key={r.projectId} hover>
                       <TableCell sx={TABLE_CELL_SX}>{r.projectName}</TableCell>
                       <TableCell sx={TABLE_CELL_SX}>{r.clientName}</TableCell>
@@ -645,10 +976,50 @@ export default function GSTPage() {
             <>
               <TableHead>
                 <TableRow>
-                  <TableCell sx={TABLE_HEADER_SX}>Month</TableCell>
-                  <TableCell sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}>Invoice count</TableCell>
-                  <TableCell sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}>Total base</TableCell>
-                  <TableCell sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}>Total GST</TableCell>
+                  <FilterableSortHeader
+                    label="Month"
+                    field="period"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.period ?? ''}
+                    filterOptions={monthFilterOptions.period}
+                    onFilter={handleColumnFilter('period')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Invoice count"
+                    field="invoiceCount"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.invoiceCount ?? ''}
+                    filterOptions={monthFilterOptions.invoiceCount}
+                    onFilter={handleColumnFilter('invoiceCount')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="Total base"
+                    field="baseAmount"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.baseAmount ?? ''}
+                    filterOptions={monthFilterOptions.baseAmount}
+                    onFilter={handleColumnFilter('baseAmount')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="Total GST"
+                    field="gstAmount"
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                    filterValue={colFilters.gstAmount ?? ''}
+                    filterOptions={monthFilterOptions.gstAmount}
+                    onFilter={handleColumnFilter('gstAmount')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -658,14 +1029,14 @@ export default function GSTPage() {
                       Loading…
                     </TableCell>
                   </TableRow>
-                ) : monthRows.length === 0 ? (
+                ) : displayedMonthRows.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={4} sx={{ ...TABLE_CELL_SX, py: 4, textAlign: 'center' }}>
                       No data.
                     </TableCell>
                   </TableRow>
                 ) : (
-                  monthRows.map((r) => (
+                  displayedMonthRows.map((r) => (
                     <TableRow key={`${r.year}-${r.month}`} hover>
                       <TableCell sx={TABLE_CELL_SX}>{r.period}</TableCell>
                       <TableCell sx={{ ...TABLE_CELL_SX, textAlign: 'right' }}>{r.invoiceCount}</TableCell>

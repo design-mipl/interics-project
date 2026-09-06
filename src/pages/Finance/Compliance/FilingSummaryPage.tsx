@@ -27,6 +27,7 @@ import { FileSpreadsheet, ShieldCheck } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Button, Select, StatusBadge, Tag } from '@/design-system/components'
 import { tokens } from '@/design-system/tokens'
+import { FilterableSortHeader, type ColumnFilterOption } from '@/components/listing'
 import { financeApi } from '@/api/financeApi'
 import { unwrapApiData, unwrapApiList } from '@/modules/system-settings/shared/api'
 import type {
@@ -41,6 +42,13 @@ import type {
 import type { ClientInvoice } from '@/slices/live/types'
 import { formatDate, formatInr } from '@/utils/formatters'
 import { invoiceStatusToBadgeType } from '@/pages/Finance/invoiceStatus'
+import {
+  currentIndianFyStartYear,
+  financialYearSelectOptions,
+  indianFyQuarterLabel,
+  parseChartPeriod,
+  selectedFyHeading,
+} from './complianceListingUtils'
 
 const CHART_GST = '#1D9E75'
 const CHART_TDS = '#EF9F27'
@@ -72,30 +80,11 @@ const TAB_TO_LIST_TYPE: Record<Exclude<TableTab, 'all'>, FillingSummaryListType>
   vendorTds: 'vendor_tds',
 }
 
-function indianFyLabelAndRange(now = new Date()) {
-  const y = now.getFullYear()
-  const m = now.getMonth() + 1
-  const startYear = m >= 4 ? y : y - 1
-  const startStr = `${startYear}-04-01`
-  const endStr = `${startYear + 1}-03-31`
-  const label = `FY ${startYear}-${String((startYear + 1) % 100).padStart(2, '0')}`
-  return { startStr, endStr, label, startYear }
-}
-
-function parseChartPeriod(period: string): Date | null {
-  const match = period.trim().match(/^([A-Za-z]{3})\s+(\d{2})$/)
-  if (!match) return null
-  const parsed = new Date(`${match[1]} 1, 20${match[2]}`)
-  return Number.isNaN(parsed.getTime()) ? null : parsed
-}
-
 function groupChartByQuarter(rows: FillingSummaryChartPoint[]): FillingSummaryChartPoint[] {
   const map = new Map<string, FillingSummaryChartPoint>()
   for (const row of rows) {
     const parsed = parseChartPeriod(row.period)
-    const label = parsed
-      ? `Q${Math.floor(parsed.getMonth() / 3) + 1} ${parsed.getFullYear()}`
-      : row.period
+    const label = parsed ? indianFyQuarterLabel(parsed) : row.period
     const prev = map.get(label) ?? { period: label, gst: 0, tds: 0 }
     prev.gst += row.gst
     prev.tds += row.tds
@@ -133,6 +122,75 @@ function axisTickInr(v: number) {
   return `₹${formatInr(v)}`
 }
 
+type ListingControls = {
+  sortField?: string
+  sortDirection: 'asc' | 'desc'
+  filters: Record<string, string>
+}
+
+function emptyListingControls(): ListingControls {
+  return { sortDirection: 'asc', filters: {} }
+}
+
+function uniqueFilterOptions(values: Array<string | number>): ColumnFilterOption[] {
+  const seen = new Set<string>()
+  const out: ColumnFilterOption[] = []
+  for (const raw of values) {
+    const value = String(raw)
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    out.push({ value, label: value })
+  }
+  return out.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }))
+}
+
+function compareListingValues(left: unknown, right: unknown, direction: 'asc' | 'desc') {
+  const dir = direction === 'asc' ? 1 : -1
+  if (typeof left === 'number' || typeof right === 'number') {
+    return ((Number(left) || 0) - (Number(right) || 0)) * dir
+  }
+  return (
+    String(left ?? '').localeCompare(String(right ?? ''), undefined, { sensitivity: 'base' }) * dir
+  )
+}
+
+function matchesExactFilter(filter: string | undefined, value: string | number) {
+  if (!filter) return true
+  return String(value) === filter
+}
+
+function matchesDateFilter(filter: string | undefined, iso: string) {
+  if (!filter) return true
+  return iso.slice(0, 10) === filter.slice(0, 10)
+}
+
+function sortByField<T>(
+  rows: T[],
+  sortField: string | undefined,
+  sortDirection: 'asc' | 'desc',
+  resolve: (row: T, field: string) => unknown = (row, field) =>
+    (row as Record<string, unknown>)[field],
+) {
+  if (!sortField) return rows
+  return [...rows].sort((a, b) =>
+    compareListingValues(resolve(a, sortField), resolve(b, sortField), sortDirection),
+  )
+}
+
+type AllMergedRow = {
+  id: string
+  sortDate: string
+  date: string
+  ref: string
+  projectName: string
+  party: string
+  type: 'gst' | 'clientTds' | 'vendorTds'
+  typeLabel: string
+  base: number
+  tax: number
+  status: string
+}
+
 export default function FilingSummaryPage() {
   const navigate = useNavigate()
 
@@ -147,13 +205,33 @@ export default function FilingSummaryPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [periodMode, setPeriodMode] = useState<PeriodMode>('monthly')
+  const [fyStartYear, setFyStartYear] = useState(() => currentIndianFyStartYear())
+  const fyOptions = useMemo(() => financialYearSelectOptions(), [])
   const [tableTab, setTableTab] = useState<TableTab>('gst')
+  const [listingControlsByTab, setListingControlsByTab] = useState<Record<TableTab, ListingControls>>(
+    () => ({
+      all: emptyListingControls(),
+      gst: emptyListingControls(),
+      clientTds: emptyListingControls(),
+      vendorTds: emptyListingControls(),
+    }),
+  )
+
+  const listingControls = listingControlsByTab[tableTab]
+  const invoiceSortField = listingControls.sortField
+  const invoiceSortDirection = listingControls.sortDirection
+  const invoiceColFilters = listingControls.filters
 
   const scopeParams = useMemo(() => {
     const p: Record<string, string | undefined> = {}
     if (filterProjectId) p.projectId = filterProjectId
     return p
   }, [filterProjectId])
+
+  const chartParams = useMemo(
+    () => ({ ...scopeParams, fyStartYear: String(fyStartYear) }),
+    [scopeParams, fyStartYear],
+  )
 
   useEffect(() => {
     void (async () => {
@@ -173,8 +251,8 @@ export default function FilingSummaryPage() {
     try {
       const [summaryRes, chartRes, breakdownRes] = await Promise.all([
         financeApi.getFillingSummary(scopeParams),
-        financeApi.getFillingSummaryChart(scopeParams),
-        financeApi.getFillingSummaryPeriodBreakdown(scopeParams),
+        financeApi.getFillingSummaryChart(chartParams),
+        financeApi.getFillingSummaryPeriodBreakdown(chartParams),
       ])
       setKpis(unwrapApiData<FillingSummaryKpis>(summaryRes.data))
       setMonthlyChart(unwrapApiList<FillingSummaryChartPoint>(chartRes.data))
@@ -187,7 +265,7 @@ export default function FilingSummaryPage() {
     } finally {
       setLoading(false)
     }
-  }, [scopeParams])
+  }, [scopeParams, chartParams])
 
   const loadTable = useCallback(async () => {
     try {
@@ -249,12 +327,8 @@ export default function FilingSummaryPage() {
   const netTax = gstCollected - clientTds - vendorTds
   const netPositive = netTax >= 0
 
-  const fy = useMemo(() => indianFyLabelAndRange(), [])
   const fyTotals = useMemo(() => {
-    const periods = (breakdown?.periods ?? []).filter((p) => {
-      const stamp = `${p.year}-${String(p.month).padStart(2, '0')}-01`
-      return stamp >= fy.startStr && stamp <= fy.endStr
-    })
+    const periods = breakdown?.periods ?? []
     const fyGst = periods.reduce((s, p) => s + p.gst, 0)
     const fyClientTds = periods.reduce((s, p) => s + p.clientTds, 0)
     const fyVendorTds = periods.reduce((s, p) => s + p.vendorTds, 0)
@@ -264,27 +338,68 @@ export default function FilingSummaryPage() {
       fyVendorTds,
       fyNet: fyGst - fyClientTds - fyVendorTds,
     }
-  }, [breakdown, fy.startStr, fy.endStr])
+  }, [breakdown])
 
   const chartData = useMemo(
     () => (periodMode === 'monthly' ? monthlyChart : groupChartByQuarter(monthlyChart)),
     [monthlyChart, periodMode],
   )
 
-  const allMergedRows = useMemo(() => {
-    type Row = {
-      id: string
-      sortDate: string
-      date: string
-      ref: string
-      projectName: string
-      party: string
-      type: 'gst' | 'clientTds' | 'vendorTds'
-      base: number
-      tax: number
-      status: string
+  const gstFilterOptions = useMemo(
+    () => ({
+      invoiceNumber: uniqueFilterOptions(gstEntries.map((e) => e.invoiceNumber)),
+      projectName: uniqueFilterOptions(gstEntries.map((e) => e.projectName)),
+      clientName: uniqueFilterOptions(gstEntries.map((e) => e.clientName)),
+      invoiceDate: uniqueFilterOptions(gstEntries.map((e) => e.invoiceDate.slice(0, 10))),
+      baseAmount: uniqueFilterOptions(gstEntries.map((e) => e.baseAmount)),
+      gstRate: uniqueFilterOptions(gstEntries.map((e) => e.gstRate)).map((opt) => ({
+        value: opt.value,
+        label: `${opt.value}%`,
+      })),
+      gstAmount: uniqueFilterOptions(gstEntries.map((e) => e.gstAmount)),
+      status: uniqueFilterOptions(gstEntries.map((e) => e.status)),
+    }),
+    [gstEntries],
+  )
+
+  const clientTdsFilterOptions = useMemo(
+    () => ({
+      invoiceNumber: uniqueFilterOptions(clientTdsEntries.map((e) => e.invoiceNumber)),
+      projectName: uniqueFilterOptions(clientTdsEntries.map((e) => e.projectName)),
+      clientName: uniqueFilterOptions(clientTdsEntries.map((e) => e.clientName)),
+      invoiceDate: uniqueFilterOptions(clientTdsEntries.map((e) => e.invoiceDate.slice(0, 10))),
+      grossAmount: uniqueFilterOptions(clientTdsEntries.map((e) => e.grossAmount)),
+      tdsRate: uniqueFilterOptions(clientTdsEntries.map((e) => e.tdsRate)).map((opt) => ({
+        value: opt.value,
+        label: `${opt.value}%`,
+      })),
+      tdsAmount: uniqueFilterOptions(clientTdsEntries.map((e) => e.tdsAmount)),
+      status: uniqueFilterOptions(clientTdsEntries.map((e) => e.status)),
+    }),
+    [clientTdsEntries],
+  )
+
+  const vendorTdsFilterOptions = useMemo(() => {
+    const refs = vendorTdsEntries.map(
+      (e) => e.invoiceNumber?.trim() || e.referenceNumber?.trim() || '—',
+    )
+    return {
+      invoiceNumber: uniqueFilterOptions(refs),
+      projectName: uniqueFilterOptions(vendorTdsEntries.map((e) => e.projectName)),
+      vendorName: uniqueFilterOptions(vendorTdsEntries.map((e) => e.vendorName)),
+      paymentDate: uniqueFilterOptions(vendorTdsEntries.map((e) => e.paymentDate.slice(0, 10))),
+      invoiceTotal: uniqueFilterOptions(vendorTdsEntries.map((e) => e.invoiceTotal)),
+      tdsRate: uniqueFilterOptions(vendorTdsEntries.map((e) => e.tdsRate)).map((opt) => ({
+        value: opt.value,
+        label: `${opt.value}%`,
+      })),
+      tdsAmount: uniqueFilterOptions(vendorTdsEntries.map((e) => e.tdsAmount)),
+      status: uniqueFilterOptions(vendorTdsEntries.map((e) => e.status || 'paid')),
     }
-    const out: Row[] = []
+  }, [vendorTdsEntries])
+
+  const allMergedRows = useMemo(() => {
+    const out: AllMergedRow[] = []
     for (const e of gstEntries) {
       out.push({
         id: `g-${e.invoiceId}`,
@@ -294,6 +409,7 @@ export default function FilingSummaryPage() {
         projectName: e.projectName,
         party: e.clientName,
         type: 'gst',
+        typeLabel: 'GST',
         base: e.baseAmount,
         tax: e.gstAmount,
         status: e.status,
@@ -308,6 +424,7 @@ export default function FilingSummaryPage() {
         projectName: e.projectName,
         party: e.clientName,
         type: 'clientTds',
+        typeLabel: 'Client TDS',
         base: e.grossAmount,
         tax: e.tdsAmount,
         status: e.status,
@@ -322,6 +439,7 @@ export default function FilingSummaryPage() {
         projectName: e.projectName,
         party: e.vendorName,
         type: 'vendorTds',
+        typeLabel: 'Vendor TDS',
         base: e.invoiceTotal,
         tax: e.tdsAmount,
         status: e.status || 'paid',
@@ -331,22 +449,131 @@ export default function FilingSummaryPage() {
     return out
   }, [gstEntries, clientTdsEntries, vendorTdsEntries])
 
+  const allFilterOptions = useMemo(
+    () => ({
+      date: uniqueFilterOptions(allMergedRows.map((e) => e.date.slice(0, 10))),
+      ref: uniqueFilterOptions(allMergedRows.map((e) => e.ref)),
+      projectName: uniqueFilterOptions(allMergedRows.map((e) => e.projectName)),
+      party: uniqueFilterOptions(allMergedRows.map((e) => e.party)),
+      type: uniqueFilterOptions(allMergedRows.map((e) => e.typeLabel)),
+      base: uniqueFilterOptions(allMergedRows.map((e) => e.base)),
+      tax: uniqueFilterOptions(allMergedRows.map((e) => e.tax)),
+      status: uniqueFilterOptions(allMergedRows.map((e) => e.status)),
+    }),
+    [allMergedRows],
+  )
+
+  const displayedGstEntries = useMemo(() => {
+    const f = listingControlsByTab.gst.filters
+    const rows = gstEntries.filter(
+      (e) =>
+        matchesExactFilter(f.invoiceNumber, e.invoiceNumber) &&
+        matchesExactFilter(f.projectName, e.projectName) &&
+        matchesExactFilter(f.clientName, e.clientName) &&
+        matchesDateFilter(f.invoiceDate, e.invoiceDate) &&
+        matchesExactFilter(f.baseAmount, e.baseAmount) &&
+        matchesExactFilter(f.gstRate, e.gstRate) &&
+        matchesExactFilter(f.gstAmount, e.gstAmount) &&
+        matchesExactFilter(f.status, e.status),
+    )
+    return sortByField(rows, listingControlsByTab.gst.sortField, listingControlsByTab.gst.sortDirection)
+  }, [gstEntries, listingControlsByTab.gst])
+
+  const displayedClientTdsEntries = useMemo(() => {
+    const f = listingControlsByTab.clientTds.filters
+    const rows = clientTdsEntries.filter(
+      (e) =>
+        matchesExactFilter(f.invoiceNumber, e.invoiceNumber) &&
+        matchesExactFilter(f.projectName, e.projectName) &&
+        matchesExactFilter(f.clientName, e.clientName) &&
+        matchesDateFilter(f.invoiceDate, e.invoiceDate) &&
+        matchesExactFilter(f.grossAmount, e.grossAmount) &&
+        matchesExactFilter(f.tdsRate, e.tdsRate) &&
+        matchesExactFilter(f.tdsAmount, e.tdsAmount) &&
+        matchesExactFilter(f.status, e.status),
+    )
+    return sortByField(
+      rows,
+      listingControlsByTab.clientTds.sortField,
+      listingControlsByTab.clientTds.sortDirection,
+    )
+  }, [clientTdsEntries, listingControlsByTab.clientTds])
+
+  const displayedVendorTdsEntries = useMemo(() => {
+    const f = listingControlsByTab.vendorTds.filters
+    const rows = vendorTdsEntries.filter((e) => {
+      const ref = e.invoiceNumber?.trim() || e.referenceNumber?.trim() || '—'
+      return (
+        matchesExactFilter(f.invoiceNumber, ref) &&
+        matchesExactFilter(f.projectName, e.projectName) &&
+        matchesExactFilter(f.vendorName, e.vendorName) &&
+        matchesDateFilter(f.paymentDate, e.paymentDate) &&
+        matchesExactFilter(f.invoiceTotal, e.invoiceTotal) &&
+        matchesExactFilter(f.tdsRate, e.tdsRate) &&
+        matchesExactFilter(f.tdsAmount, e.tdsAmount) &&
+        matchesExactFilter(f.status, e.status || 'paid')
+      )
+    })
+    return sortByField(
+      rows,
+      listingControlsByTab.vendorTds.sortField,
+      listingControlsByTab.vendorTds.sortDirection,
+      (row, field) => {
+        if (field === 'invoiceNumber') {
+          return row.invoiceNumber?.trim() || row.referenceNumber?.trim() || '—'
+        }
+        if (field === 'status') return row.status || 'paid'
+        return (row as Record<string, unknown>)[field]
+      },
+    )
+  }, [vendorTdsEntries, listingControlsByTab.vendorTds])
+
+  const displayedAllMergedRows = useMemo(() => {
+    const f = listingControlsByTab.all.filters
+    const rows = allMergedRows.filter(
+      (e) =>
+        matchesDateFilter(f.date, e.date) &&
+        matchesExactFilter(f.ref, e.ref) &&
+        matchesExactFilter(f.projectName, e.projectName) &&
+        matchesExactFilter(f.party, e.party) &&
+        matchesExactFilter(f.type, e.typeLabel) &&
+        matchesExactFilter(f.base, e.base) &&
+        matchesExactFilter(f.tax, e.tax) &&
+        matchesExactFilter(f.status, e.status),
+    )
+    return sortByField(
+      rows,
+      listingControlsByTab.all.sortField,
+      listingControlsByTab.all.sortDirection,
+      (row, field) => {
+        if (field === 'type') return row.typeLabel
+        return (row as Record<string, unknown>)[field]
+      },
+    )
+  }, [allMergedRows, listingControlsByTab.all])
+
   const gstFooterTotals = useMemo(
     () => ({
-      base: gstEntries.reduce((s, e) => s + e.baseAmount, 0),
-      gst: gstEntries.reduce((s, e) => s + e.gstAmount, 0),
+      base: displayedGstEntries.reduce((s, e) => s + e.baseAmount, 0),
+      gst: displayedGstEntries.reduce((s, e) => s + e.gstAmount, 0),
     }),
-    [gstEntries],
+    [displayedGstEntries],
   )
 
-  const clientTdsTotalFooter = useMemo(
-    () => clientTdsEntries.reduce((s, e) => s + e.tdsAmount, 0),
-    [clientTdsEntries],
+  const clientTdsFooter = useMemo(
+    () => ({
+      invoice: displayedClientTdsEntries.reduce((s, e) => s + e.grossAmount, 0),
+      tds: displayedClientTdsEntries.reduce((s, e) => s + e.tdsAmount, 0),
+    }),
+    [displayedClientTdsEntries],
   )
 
-  const vendorTdsTotalFooter = useMemo(
-    () => vendorTdsEntries.reduce((s, e) => s + e.tdsAmount, 0),
-    [vendorTdsEntries],
+  const vendorTdsFooter = useMemo(
+    () => ({
+      invoice: displayedVendorTdsEntries.reduce((s, e) => s + e.invoiceTotal, 0),
+      tds: displayedVendorTdsEntries.reduce((s, e) => s + e.tdsAmount, 0),
+    }),
+    [displayedVendorTdsEntries],
   )
 
   async function exportCurrentTab() {
@@ -354,12 +581,12 @@ export default function FilingSummaryPage() {
     if (tableTab === 'all') {
       downloadCsv(`filing-all-entries-${stamp}.csv`, [
         ['Date', 'Invoice/Ref', 'Project', 'Party', 'Type', 'Base amount', 'GST / TDS amount', 'Status'],
-        ...allMergedRows.map((r) => [
+        ...displayedAllMergedRows.map((r) => [
           r.date,
           r.ref,
           r.projectName,
           r.party,
-          r.type === 'gst' ? 'GST' : r.type === 'clientTds' ? 'Client TDS' : 'Vendor TDS',
+          r.typeLabel,
           r.base,
           r.tax,
           r.status,
@@ -369,9 +596,12 @@ export default function FilingSummaryPage() {
     }
     try {
       const type = TAB_TO_LIST_TYPE[tableTab]
+      const sortField = listingControlsByTab[tableTab].sortField
+      const sortDirection = listingControlsByTab[tableTab].sortDirection
       const res = await financeApi.exportFillingSummary({
         type,
         ...(filterProjectId ? { projectId: filterProjectId } : {}),
+        ...(sortField ? { sortBy: sortField, sortOrder: sortDirection } : {}),
       })
       downloadBlob(
         res.data as Blob,
@@ -381,6 +611,38 @@ export default function FilingSummaryPage() {
       setError('Could not export filling summary.')
     }
   }
+
+  function handleInvoiceSort(field: string, direction: 'asc' | 'desc') {
+    setListingControlsByTab((prev) => ({
+      ...prev,
+      [tableTab]: { ...prev[tableTab], sortField: field, sortDirection: direction },
+    }))
+  }
+
+  function handleInvoiceColumnFilter(field: string) {
+    return (value: string) => {
+      setListingControlsByTab((prev) => {
+        const current = prev[tableTab]
+        const nextFilters = { ...current.filters }
+        if (!value) delete nextFilters[field]
+        else nextFilters[field] = value
+        return {
+          ...prev,
+          [tableTab]: { ...current, filters: nextFilters },
+        }
+      })
+    }
+  }
+
+  function resetInvoiceListingControls() {
+    setListingControlsByTab((prev) => ({
+      ...prev,
+      [tableTab]: emptyListingControls(),
+    }))
+  }
+
+  const hasInvoiceListingControls =
+    Boolean(invoiceSortField) || Object.keys(invoiceColFilters).length > 0
 
   const pillSx = (active: boolean) => ({
     border: '1px solid',
@@ -507,7 +769,17 @@ export default function FilingSummaryPage() {
             <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
               Monthly trend
             </Typography>
-            <Stack direction="row" gap={0.75}>
+            <Stack direction="row" gap={0.75} alignItems="center" flexWrap="wrap">
+              <Select
+                size="sm"
+                value={String(fyStartYear)}
+                onChange={(v) => {
+                  const next = Number(v)
+                  if (Number.isInteger(next)) setFyStartYear(next)
+                }}
+                options={fyOptions}
+                sx={{ minWidth: 180 }}
+              />
               <Box
                 component="button"
                 type="button"
@@ -529,8 +801,18 @@ export default function FilingSummaryPage() {
           <Box sx={{ width: 1, height: 360 }}>
             {loading ? (
               <Skeleton variant="rounded" width="100%" height="100%" />
+            ) : chartData.length === 0 ? (
+              <Stack height="100%" alignItems="center" justifyContent="center">
+                <Typography variant="body2" color="text.secondary">
+                  No period data for this selection.
+                </Typography>
+              </Stack>
             ) : (
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer
+                key={`${periodMode}-${filterProjectId || 'all'}-${fyStartYear}`}
+                width="100%"
+                height="100%"
+              >
                 <BarChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke={tokens.color.neutral[200]} />
                   <XAxis dataKey="period" tick={{ fontSize: 11 }} />
@@ -561,7 +843,17 @@ export default function FilingSummaryPage() {
           <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1.5 }}>
             Period breakdown
           </Typography>
-          <Box sx={{ mb: 2 }}>
+          <Stack spacing={1} sx={{ mb: 2 }}>
+            <Select
+              size="sm"
+              fullWidth
+              value={String(fyStartYear)}
+              onChange={(v) => {
+                const next = Number(v)
+                if (Number.isInteger(next)) setFyStartYear(next)
+              }}
+              options={fyOptions}
+            />
             <Select
               placeholder="All"
               size="sm"
@@ -571,7 +863,7 @@ export default function FilingSummaryPage() {
               onChange={(v) => setFilterProjectId(v ? String(v) : '')}
               options={projectOptions}
             />
-          </Box>
+          </Stack>
           <Stack gap={1}>
             <Stack direction="row" justifyContent="space-between">
               <Typography variant="body2" sx={{ fontSize: 13, color: 'text.secondary' }}>
@@ -615,7 +907,7 @@ export default function FilingSummaryPage() {
             </Stack>
           </Stack>
 
-          {filterProjectId && (breakdown?.periods.length ?? 0) > 0 && (
+          {(breakdown?.periods.length ?? 0) > 0 ? (
             <>
               <Box sx={{ borderTop: `1px solid ${tokens.color.neutral[100]}`, my: 2 }} />
               <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, letterSpacing: 0.5 }}>
@@ -634,12 +926,19 @@ export default function FilingSummaryPage() {
                 ))}
               </Stack>
             </>
-          )}
+          ) : !loading ? (
+            <>
+              <Box sx={{ borderTop: `1px solid ${tokens.color.neutral[100]}`, my: 2 }} />
+              <Typography variant="body2" color="text.secondary" sx={{ fontSize: 12 }}>
+                No monthly breakdown data for this selection.
+              </Typography>
+            </>
+          ) : null}
 
           <Box sx={{ borderTop: `1px solid ${tokens.color.neutral[100]}`, my: 2 }} />
 
           <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, letterSpacing: 0.5 }}>
-            This Financial Year ({fy.label})
+            {selectedFyHeading(fyStartYear)}
           </Typography>
           <Stack gap={1} sx={{ mt: 1 }}>
             <Stack direction="row" justifyContent="space-between">
@@ -722,14 +1021,25 @@ export default function FilingSummaryPage() {
               </Box>
             ))}
           </Stack>
-          <Button
-            size="sm"
-            variant="outlined"
-            color="primary"
-            label="Export CSV"
-            startIcon={<FileSpreadsheet size={14} strokeWidth={2} />}
-            onClick={() => void exportCurrentTab()}
-          />
+          <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
+            {hasInvoiceListingControls ? (
+              <Button
+                size="sm"
+                variant="outlined"
+                color="secondary"
+                label="Reset filters"
+                onClick={resetInvoiceListingControls}
+              />
+            ) : null}
+            <Button
+              size="sm"
+              variant="outlined"
+              color="primary"
+              label="Export CSV"
+              startIcon={<FileSpreadsheet size={14} strokeWidth={2} />}
+              onClick={() => void exportCurrentTab()}
+            />
+          </Stack>
         </Stack>
 
         <Table size="small">
@@ -737,18 +1047,95 @@ export default function FilingSummaryPage() {
             <>
               <TableHead>
                 <TableRow>
-                  <TableCell sx={TABLE_HEADER_SX}>Date</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Invoice/Ref</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Project</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Party</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Type</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX} align="right">
-                    Base amount
-                  </TableCell>
-                  <TableCell sx={TABLE_HEADER_SX} align="right">
-                    GST / TDS amount
-                  </TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Status</TableCell>
+                  <FilterableSortHeader
+                    label="Date"
+                    field="date"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterMode="date"
+                    filterValue={invoiceColFilters.date ?? ''}
+                    filterOptions={allFilterOptions.date}
+                    onFilter={handleInvoiceColumnFilter('date')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Invoice/Ref"
+                    field="ref"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.ref ?? ''}
+                    filterOptions={allFilterOptions.ref}
+                    onFilter={handleInvoiceColumnFilter('ref')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Project"
+                    field="projectName"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.projectName ?? ''}
+                    filterOptions={allFilterOptions.projectName}
+                    onFilter={handleInvoiceColumnFilter('projectName')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Party"
+                    field="party"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.party ?? ''}
+                    filterOptions={allFilterOptions.party}
+                    onFilter={handleInvoiceColumnFilter('party')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Type"
+                    field="type"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.type ?? ''}
+                    filterOptions={allFilterOptions.type}
+                    onFilter={handleInvoiceColumnFilter('type')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Base amount"
+                    field="base"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.base ?? ''}
+                    filterOptions={allFilterOptions.base}
+                    onFilter={handleInvoiceColumnFilter('base')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="GST / TDS amount"
+                    field="tax"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.tax ?? ''}
+                    filterOptions={allFilterOptions.tax}
+                    onFilter={handleInvoiceColumnFilter('tax')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="Status"
+                    field="status"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.status ?? ''}
+                    filterOptions={allFilterOptions.status}
+                    onFilter={handleInvoiceColumnFilter('status')}
+                    sx={TABLE_HEADER_SX}
+                  />
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -763,7 +1150,7 @@ export default function FilingSummaryPage() {
                     </TableRow>
                   ))}
                 {!loading &&
-                  allMergedRows.map((r) => (
+                  displayedAllMergedRows.map((r) => (
                     <TableRow key={r.id} hover>
                       <TableCell sx={TABLE_CELL_SX}>{formatDate(r.date)}</TableCell>
                       <TableCell sx={TABLE_CELL_SX}>{r.ref}</TableCell>
@@ -795,7 +1182,7 @@ export default function FilingSummaryPage() {
                       </TableCell>
                     </TableRow>
                   ))}
-                {!loading && allMergedRows.length === 0 && (
+                {!loading && displayedAllMergedRows.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={8} sx={{ ...TABLE_CELL_SX, py: 4, textAlign: 'center' }}>
                       No entries
@@ -810,20 +1197,95 @@ export default function FilingSummaryPage() {
             <>
               <TableHead>
                 <TableRow>
-                  <TableCell sx={TABLE_HEADER_SX}>Invoice no.</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Project</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Client</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Invoice date</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX} align="right">
-                    Base amount
-                  </TableCell>
-                  <TableCell sx={TABLE_HEADER_SX} align="right">
-                    GST rate
-                  </TableCell>
-                  <TableCell sx={TABLE_HEADER_SX} align="right">
-                    GST amount
-                  </TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Status</TableCell>
+                  <FilterableSortHeader
+                    label="Invoice no."
+                    field="invoiceNumber"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.invoiceNumber ?? ''}
+                    filterOptions={gstFilterOptions.invoiceNumber}
+                    onFilter={handleInvoiceColumnFilter('invoiceNumber')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Project"
+                    field="projectName"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.projectName ?? ''}
+                    filterOptions={gstFilterOptions.projectName}
+                    onFilter={handleInvoiceColumnFilter('projectName')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Client"
+                    field="clientName"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.clientName ?? ''}
+                    filterOptions={gstFilterOptions.clientName}
+                    onFilter={handleInvoiceColumnFilter('clientName')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Invoice date"
+                    field="invoiceDate"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterMode="date"
+                    filterValue={invoiceColFilters.invoiceDate ?? ''}
+                    filterOptions={gstFilterOptions.invoiceDate}
+                    onFilter={handleInvoiceColumnFilter('invoiceDate')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Base amount"
+                    field="baseAmount"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.baseAmount ?? ''}
+                    filterOptions={gstFilterOptions.baseAmount}
+                    onFilter={handleInvoiceColumnFilter('baseAmount')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="GST rate"
+                    field="gstRate"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.gstRate ?? ''}
+                    filterOptions={gstFilterOptions.gstRate}
+                    onFilter={handleInvoiceColumnFilter('gstRate')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="GST amount"
+                    field="gstAmount"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.gstAmount ?? ''}
+                    filterOptions={gstFilterOptions.gstAmount}
+                    onFilter={handleInvoiceColumnFilter('gstAmount')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="Status"
+                    field="status"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.status ?? ''}
+                    filterOptions={gstFilterOptions.status}
+                    onFilter={handleInvoiceColumnFilter('status')}
+                    sx={TABLE_HEADER_SX}
+                  />
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -837,7 +1299,14 @@ export default function FilingSummaryPage() {
                         ))}
                       </TableRow>
                     ))
-                  : (gstEntries).map((e) => (
+                  : displayedGstEntries.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={8} sx={{ ...TABLE_CELL_SX, py: 4, textAlign: 'center' }}>
+                          No invoices
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      displayedGstEntries.map((e) => (
                   <TableRow key={e.invoiceId} hover>
                     <TableCell sx={TABLE_CELL_SX}>
                       <Typography
@@ -879,7 +1348,8 @@ export default function FilingSummaryPage() {
                       />
                     </TableCell>
                   </TableRow>
-                ))}
+                      ))
+                    )}
               </TableBody>
               <TableFooter>
                 <TableRow>
@@ -903,20 +1373,95 @@ export default function FilingSummaryPage() {
             <>
               <TableHead>
                 <TableRow>
-                  <TableCell sx={TABLE_HEADER_SX}>Invoice no.</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Project</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Client</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Invoice date</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX} align="right">
-                    Invoice amount
-                  </TableCell>
-                  <TableCell sx={TABLE_HEADER_SX} align="right">
-                    TDS rate
-                  </TableCell>
-                  <TableCell sx={TABLE_HEADER_SX} align="right">
-                    TDS amount
-                  </TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Status</TableCell>
+                  <FilterableSortHeader
+                    label="Invoice no."
+                    field="invoiceNumber"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.invoiceNumber ?? ''}
+                    filterOptions={clientTdsFilterOptions.invoiceNumber}
+                    onFilter={handleInvoiceColumnFilter('invoiceNumber')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Project"
+                    field="projectName"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.projectName ?? ''}
+                    filterOptions={clientTdsFilterOptions.projectName}
+                    onFilter={handleInvoiceColumnFilter('projectName')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Client"
+                    field="clientName"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.clientName ?? ''}
+                    filterOptions={clientTdsFilterOptions.clientName}
+                    onFilter={handleInvoiceColumnFilter('clientName')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Invoice date"
+                    field="invoiceDate"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterMode="date"
+                    filterValue={invoiceColFilters.invoiceDate ?? ''}
+                    filterOptions={clientTdsFilterOptions.invoiceDate}
+                    onFilter={handleInvoiceColumnFilter('invoiceDate')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Invoice amount"
+                    field="grossAmount"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.grossAmount ?? ''}
+                    filterOptions={clientTdsFilterOptions.grossAmount}
+                    onFilter={handleInvoiceColumnFilter('grossAmount')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="TDS rate"
+                    field="tdsRate"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.tdsRate ?? ''}
+                    filterOptions={clientTdsFilterOptions.tdsRate}
+                    onFilter={handleInvoiceColumnFilter('tdsRate')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="TDS amount"
+                    field="tdsAmount"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.tdsAmount ?? ''}
+                    filterOptions={clientTdsFilterOptions.tdsAmount}
+                    onFilter={handleInvoiceColumnFilter('tdsAmount')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="Status"
+                    field="status"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.status ?? ''}
+                    filterOptions={clientTdsFilterOptions.status}
+                    onFilter={handleInvoiceColumnFilter('status')}
+                    sx={TABLE_HEADER_SX}
+                  />
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -930,7 +1475,14 @@ export default function FilingSummaryPage() {
                         ))}
                       </TableRow>
                     ))
-                  : (clientTdsEntries).map((e) => (
+                  : displayedClientTdsEntries.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={8} sx={{ ...TABLE_CELL_SX, py: 4, textAlign: 'center' }}>
+                          No invoices
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      displayedClientTdsEntries.map((e) => (
                   <TableRow key={e.invoiceId} hover>
                     <TableCell sx={TABLE_CELL_SX}>
                       <Typography
@@ -972,15 +1524,20 @@ export default function FilingSummaryPage() {
                       />
                     </TableCell>
                   </TableRow>
-                ))}
+                      ))
+                    )}
               </TableBody>
               <TableFooter>
                 <TableRow>
-                  <TableCell colSpan={6} sx={{ ...TABLE_CELL_SX, fontWeight: 700 }}>
-                    Total TDS amount
+                  <TableCell colSpan={4} sx={{ ...TABLE_CELL_SX, fontWeight: 700 }}>
+                    Total
                   </TableCell>
                   <TableCell sx={{ ...TABLE_CELL_SX, fontWeight: 700 }} align="right">
-                    ₹{formatInr(clientTdsTotalFooter)}
+                    ₹{formatInr(clientTdsFooter.invoice)}
+                  </TableCell>
+                  <TableCell sx={TABLE_CELL_SX} />
+                  <TableCell sx={{ ...TABLE_CELL_SX, fontWeight: 700 }} align="right">
+                    ₹{formatInr(clientTdsFooter.tds)}
                   </TableCell>
                   <TableCell sx={TABLE_CELL_SX} />
                 </TableRow>
@@ -992,20 +1549,95 @@ export default function FilingSummaryPage() {
             <>
               <TableHead>
                 <TableRow>
-                  <TableCell sx={TABLE_HEADER_SX}>Invoice/Ref</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Project</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Vendor</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Payment date</TableCell>
-                  <TableCell sx={TABLE_HEADER_SX} align="right">
-                    Invoice total
-                  </TableCell>
-                  <TableCell sx={TABLE_HEADER_SX} align="right">
-                    TDS rate
-                  </TableCell>
-                  <TableCell sx={TABLE_HEADER_SX} align="right">
-                    TDS amount
-                  </TableCell>
-                  <TableCell sx={TABLE_HEADER_SX}>Status</TableCell>
+                  <FilterableSortHeader
+                    label="Invoice/Ref"
+                    field="invoiceNumber"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.invoiceNumber ?? ''}
+                    filterOptions={vendorTdsFilterOptions.invoiceNumber}
+                    onFilter={handleInvoiceColumnFilter('invoiceNumber')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Project"
+                    field="projectName"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.projectName ?? ''}
+                    filterOptions={vendorTdsFilterOptions.projectName}
+                    onFilter={handleInvoiceColumnFilter('projectName')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Vendor"
+                    field="vendorName"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.vendorName ?? ''}
+                    filterOptions={vendorTdsFilterOptions.vendorName}
+                    onFilter={handleInvoiceColumnFilter('vendorName')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Payment date"
+                    field="paymentDate"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterMode="date"
+                    filterValue={invoiceColFilters.paymentDate ?? ''}
+                    filterOptions={vendorTdsFilterOptions.paymentDate}
+                    onFilter={handleInvoiceColumnFilter('paymentDate')}
+                    sx={TABLE_HEADER_SX}
+                  />
+                  <FilterableSortHeader
+                    label="Invoice total"
+                    field="invoiceTotal"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.invoiceTotal ?? ''}
+                    filterOptions={vendorTdsFilterOptions.invoiceTotal}
+                    onFilter={handleInvoiceColumnFilter('invoiceTotal')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="TDS rate"
+                    field="tdsRate"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.tdsRate ?? ''}
+                    filterOptions={vendorTdsFilterOptions.tdsRate}
+                    onFilter={handleInvoiceColumnFilter('tdsRate')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="TDS amount"
+                    field="tdsAmount"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.tdsAmount ?? ''}
+                    filterOptions={vendorTdsFilterOptions.tdsAmount}
+                    onFilter={handleInvoiceColumnFilter('tdsAmount')}
+                    sx={{ ...TABLE_HEADER_SX, textAlign: 'right' }}
+                  />
+                  <FilterableSortHeader
+                    label="Status"
+                    field="status"
+                    sortField={invoiceSortField}
+                    sortDirection={invoiceSortDirection}
+                    onSort={handleInvoiceSort}
+                    filterValue={invoiceColFilters.status ?? ''}
+                    filterOptions={vendorTdsFilterOptions.status}
+                    onFilter={handleInvoiceColumnFilter('status')}
+                    sx={TABLE_HEADER_SX}
+                  />
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -1019,7 +1651,14 @@ export default function FilingSummaryPage() {
                         ))}
                       </TableRow>
                     ))
-                  : (vendorTdsEntries).map((e) => (
+                  : displayedVendorTdsEntries.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={8} sx={{ ...TABLE_CELL_SX, py: 4, textAlign: 'center' }}>
+                          No invoices
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      displayedVendorTdsEntries.map((e) => (
                   <TableRow key={e.paymentId} hover>
                     <TableCell sx={TABLE_CELL_SX}>
                       {e.invoiceNumber?.trim() || e.referenceNumber?.trim() || '—'}
@@ -1044,15 +1683,20 @@ export default function FilingSummaryPage() {
                       />
                     </TableCell>
                   </TableRow>
-                ))}
+                      ))
+                    )}
               </TableBody>
               <TableFooter>
                 <TableRow>
-                  <TableCell colSpan={6} sx={{ ...TABLE_CELL_SX, fontWeight: 700 }}>
-                    Total TDS amount
+                  <TableCell colSpan={4} sx={{ ...TABLE_CELL_SX, fontWeight: 700 }}>
+                    Total
                   </TableCell>
                   <TableCell sx={{ ...TABLE_CELL_SX, fontWeight: 700 }} align="right">
-                    ₹{formatInr(vendorTdsTotalFooter)}
+                    ₹{formatInr(vendorTdsFooter.invoice)}
+                  </TableCell>
+                  <TableCell sx={TABLE_CELL_SX} />
+                  <TableCell sx={{ ...TABLE_CELL_SX, fontWeight: 700 }} align="right">
+                    ₹{formatInr(vendorTdsFooter.tds)}
                   </TableCell>
                   <TableCell sx={TABLE_CELL_SX} />
                 </TableRow>

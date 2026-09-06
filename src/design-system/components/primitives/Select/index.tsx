@@ -104,8 +104,13 @@ export default function Select({
         sx={{ height: inputHeight }}
       >
         {placeholder && (
-          <MenuItem value="" disabled>
-            <Box component="span" sx={{ color: 'text.disabled' }}>{placeholder}</Box>
+          <MenuItem value="" disabled={!clearable}>
+            <Box
+              component="span"
+              sx={{ color: clearable ? 'text.primary' : 'text.disabled' }}
+            >
+              {placeholder}
+            </Box>
           </MenuItem>
         )}
         {options.map((opt) => (
