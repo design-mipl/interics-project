@@ -32,7 +32,8 @@ export const financeApi = {
   getExpenses: (params?: Record<string, string | undefined>) =>
     client.get('/finance/expenses', { params }),
 
-  getExpenseFilters: () => client.get('/finance/expenses/filters'),
+  getExpenseFilters: (params?: Record<string, string | undefined>) =>
+    client.get('/finance/expenses/filters', { params }),
 
   getExpensesSummary: (params?: Record<string, string | undefined>) =>
     client.get('/finance/expenses/summary', { params }),

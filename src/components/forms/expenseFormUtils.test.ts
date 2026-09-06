@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { VendorPO } from '@/slices/baseline/reducer'
+import type { Baseline } from '@/slices/baseline/reducer'
+import type { PitchCategory } from '@/slices/pitch/reducer'
 import type { Expense } from '@/slices/live/types'
 import {
   computeCommonExpenseAllocations,
@@ -8,6 +10,8 @@ import {
   expenseSharePercent,
   getBuildVendorsFromPOs,
   resolveCommonExpenseAllocations,
+  resolveLiveBuildVendors,
+  servicesForVendorLinkedExpense,
   vendorPoContractualValue,
 } from './expenseFormUtils'
 import {
@@ -301,5 +305,222 @@ describe('shared Finance and Project Live entry point', () => {
     const a = computeCommonExpenseAllocationsWithSelection(1000, POS_ABC, 'proportional_po', selected)
     const b = computeCommonExpenseAllocationsWithSelection(1000, POS_ABC, 'proportional_po', selected)
     expect(a).toEqual(b)
+  })
+})
+
+describe('resolveLiveBuildVendors', () => {
+  const baselineWithMappings = {
+    id: 'b1',
+    projectId: 'project-1',
+    categories: [
+      {
+        id: 'c1',
+        categoryId: 'cat-1',
+        categoryName: 'Build',
+        totalValue: 100,
+        services: [
+          {
+            id: 'svc-baseline-1',
+            name: 'Civil',
+            subcategoryId: 'master-civil',
+            subcategoryName: 'Civil Works',
+            customName: null,
+            value: 100,
+            clientMilestones: [],
+            vendorMappings: [
+              { id: 'm1', vendorId: 'v-map', vendorName: 'Mapped Vendor', value: 40 },
+            ],
+            milestonesTotal: 0,
+          },
+        ],
+      },
+    ],
+  } as unknown as Baseline
+
+  it('uses Vendor POs when present', () => {
+    const vendors = resolveLiveBuildVendors(POS_ABC, baselineWithMappings)
+    expect(vendors.map((v) => v.vendorId).sort()).toEqual(['v-a', 'v-b', 'v-c'])
+  })
+
+  it('falls back to baseline vendorMappings when no POs', () => {
+    const vendors = resolveLiveBuildVendors([], baselineWithMappings)
+    expect(vendors).toEqual([
+      { vendorId: 'v-map', vendorName: 'Mapped Vendor', poSum: 40 },
+    ])
+  })
+})
+
+describe('servicesForVendorLinkedExpense', () => {
+  const baseline = {
+    id: 'b1',
+    projectId: 'project-1',
+    categories: [
+      {
+        id: 'c1',
+        categoryId: 'cat-1',
+        categoryName: 'Build',
+        totalValue: 200,
+        services: [
+          {
+            id: 'svc-baseline-1',
+            name: 'Civil',
+            subcategoryId: 'master-civil',
+            subcategoryName: 'Civil Works',
+            customName: null,
+            value: 100,
+            clientMilestones: [],
+            vendorMappings: [
+              { id: 'm1', vendorId: 'v-a', vendorName: 'Vendor A', value: 40 },
+            ],
+            milestonesTotal: 0,
+          },
+          {
+            id: 'svc-baseline-2',
+            name: 'MEP',
+            subcategoryId: 'master-mep',
+            subcategoryName: 'MEP',
+            customName: null,
+            value: 100,
+            clientMilestones: [],
+            vendorMappings: [],
+            milestonesTotal: 0,
+          },
+        ],
+      },
+    ],
+  } as unknown as Baseline
+
+  it('matches PO linked ids via subcategoryId (master id)', () => {
+    const pos = [
+      makePo({
+        vendorId: 'v-b',
+        vendorName: 'Vendor B',
+        poValue: 50,
+        linkedBaselineServiceIds: ['master-mep'],
+      }),
+    ]
+    const options = servicesForVendorLinkedExpense(baseline, 'v-b', pos)
+    expect(options.map((o) => o.baselineServiceId)).toEqual(['svc-baseline-2'])
+  })
+
+  it('includes services with vendorMappings for the selected vendor', () => {
+    const options = servicesForVendorLinkedExpense(baseline, 'v-a', [])
+    expect(options.map((o) => o.baselineServiceId)).toEqual(['svc-baseline-1'])
+    expect(options[0]?.name).toBe('Civil Works')
+  })
+
+  it('returns all services when no vendor is selected', () => {
+    const options = servicesForVendorLinkedExpense(baseline, '', [])
+    expect(options.map((o) => o.baselineServiceId)).toEqual([
+      'svc-baseline-1',
+      'svc-baseline-2',
+    ])
+  })
+
+  it('resolves services via linkedVendorMappingId and milestone.serviceId', () => {
+    const pos = [
+      makePo({
+        vendorId: 'v-c',
+        vendorName: 'Vendor C',
+        poValue: 10,
+        linkedBaselineServiceIds: [],
+        linkedVendorMappingId: 'm1',
+        milestones: [
+          {
+            id: 'ms-1',
+            name: 'M1',
+            percentage: 100,
+            value: 10,
+            dueDate: null,
+            status: 'Pending',
+            serviceId: 'master-mep',
+          },
+        ],
+      }),
+    ]
+    const options = servicesForVendorLinkedExpense(baseline, 'v-c', pos)
+    expect(options.map((o) => o.baselineServiceId).sort()).toEqual([
+      'svc-baseline-1',
+      'svc-baseline-2',
+    ])
+  })
+
+  it('uses pitch categories as a fallback catalog for vendor mappings', () => {
+    const pitchOnlyCategories = [
+      {
+        id: 'pc1',
+        categoryId: 'cat-1',
+        categoryName: 'Build',
+        totalValue: 50,
+        services: [
+          {
+            id: 'pitch-svc-9',
+            name: 'Joinery',
+            subcategoryId: 'master-joinery',
+            subcategoryName: 'Joinery',
+            customName: null,
+            value: 50,
+            clientMilestones: [],
+            vendorMappings: [
+              { id: 'm9', vendorId: 'v-pitch', vendorName: 'Pitch Vendor', value: 50 },
+            ],
+            milestonesTotal: 0,
+          },
+        ],
+      },
+    ]
+    const options = servicesForVendorLinkedExpense(
+      null,
+      'v-pitch',
+      [],
+      pitchOnlyCategories as unknown as PitchCategory[],
+    )
+    expect(options.map((o) => o.baselineServiceId)).toEqual(['pitch-svc-9'])
+    expect(options.map((o) => o.name)).toEqual(['Joinery'])
+  })
+
+  it('never shows unresolved raw service ids as dropdown options', () => {
+    const pos = [
+      makePo({
+        vendorId: 'v-z',
+        vendorName: 'Vendor Z',
+        poValue: 1,
+        linkedBaselineServiceIds: ['orphan-service-id', '1c776b1f-ebc0-4e9b-94a9-8e4758482b46'],
+      }),
+    ]
+    const options = servicesForVendorLinkedExpense(null, 'v-z', pos)
+    expect(options).toEqual([])
+  })
+
+  it('skips services whose only labels are raw ids', () => {
+    const idOnlyBaseline = {
+      id: 'b1',
+      projectId: 'project-1',
+      categories: [
+        {
+          id: 'c1',
+          categoryId: 'cat-1',
+          categoryName: 'Build',
+          totalValue: 10,
+          services: [
+            {
+              id: '1c776b1f-ebc0-4e9b-94a9-8e4758482b46',
+              name: '1c776b1f-ebc0-4e9b-94a9-8e4758482b46',
+              subcategoryId: 'master-x',
+              subcategoryName: null,
+              customName: null,
+              value: 10,
+              clientMilestones: [],
+              vendorMappings: [
+                { id: 'm-x', vendorId: 'v-x', vendorName: 'Vendor X', value: 10 },
+              ],
+              milestonesTotal: 0,
+            },
+          ],
+        },
+      ],
+    } as unknown as Baseline
+
+    expect(servicesForVendorLinkedExpense(idOnlyBaseline, 'v-x', [])).toEqual([])
   })
 })

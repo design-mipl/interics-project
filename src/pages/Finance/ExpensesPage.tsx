@@ -32,7 +32,7 @@ import {
   LISTING_DEFAULT_PAGE_SIZE,
   clampListingPage0Based,
 } from '@/components/listing/listingStandards'
-import { StatusBadge, Modal, Button, useToast } from '@/design-system/components'
+import { Modal, Button, useToast } from '@/design-system/components'
 import { tokens } from '@/design-system/tokens'
 import { useAppDispatch, useAppSelector } from '@/store/hooks'
 import { fetchProjects } from '@/slices/projects/thunk'
@@ -45,12 +45,11 @@ import {
   ExpenseTypeBadge,
   ViewExpenseModal,
   expenseServiceCell,
-  expenseStatusDisplay,
+  expenseTypeFilterLabel,
   expenseVendorCell,
 } from '@/components/expenses/expenseShared'
 import { usePermission } from '@/hooks/usePermission'
 
-type StatusFilter = 'all' | 'pending' | 'included_in_payment'
 type TypeTab = 'all' | ExpenseType
 type ExpensesSortField =
   | 'type'
@@ -60,7 +59,6 @@ type ExpensesSortField =
   | 'service'
   | 'amount'
   | 'date'
-  | 'status'
 
 type VisibleCols = {
   type: boolean
@@ -70,7 +68,23 @@ type VisibleCols = {
   service: boolean
   amount: boolean
   date: boolean
-  status: boolean
+}
+
+const CANONICAL_TYPE_FILTER_OPTIONS: ColumnFilterOption[] = [
+  { value: 'additional', label: 'Additional' },
+  { value: 'vendor_linked', label: 'Vendor Linked' },
+  { value: 'common', label: 'Common' },
+  { value: 'office_expenses', label: 'Office Expenses' },
+  { value: 'reimbursable_expenses', label: 'Reimbursable Expenses' },
+]
+
+function showsVendorServiceColumns(type: TypeTab): boolean {
+  return type === 'all' || type === 'vendor_linked'
+}
+
+function listingVisibleColumns(visible: VisibleCols, type: TypeTab): VisibleCols {
+  if (showsVendorServiceColumns(type)) return visible
+  return { ...visible, vendor: false, service: false }
 }
 
 function buildExpenseListColumns(visible: VisibleCols): string[] {
@@ -83,7 +97,6 @@ function buildExpenseListColumns(visible: VisibleCols): string[] {
     ...(visible.service ? (['service'] as const) : []),
     ...(visible.amount ? (['amount'] as const) : []),
     ...(visible.date ? (['date'] as const) : []),
-    ...(visible.status ? (['status'] as const) : []),
   ]
 }
 
@@ -102,6 +115,25 @@ function toColumnFilterOptions(
     value: String(option.value),
     label: option.label,
   }))
+}
+
+function mergeTypeFilterOptions(
+  options?: Array<{ value: string | number | boolean; label: string }>,
+): ColumnFilterOption[] {
+  const byValue = new Map(CANONICAL_TYPE_FILTER_OPTIONS.map((opt) => [opt.value, opt]))
+  for (const option of options ?? []) {
+    const value = String(option.value)
+    const rawLabel = option.label
+    byValue.set(value, {
+      value,
+      label: rawLabel.includes('_') ? expenseTypeFilterLabel(value) : rawLabel,
+    })
+  }
+  const canonical = CANONICAL_TYPE_FILTER_OPTIONS.map((opt) => byValue.get(opt.value)!)
+  const extras = [...byValue.values()].filter(
+    (opt) => !CANONICAL_TYPE_FILTER_OPTIONS.some((c) => c.value === opt.value),
+  )
+  return [...canonical, ...extras]
 }
 
 /** Mirrors VendorsPage TABLE_HEADER_CELL_SX / TABLE_CELL_SX. */
@@ -156,18 +188,6 @@ const CELL_SX = {
   boxSizing: 'border-box' as const,
 }
 
-const HEADER_STATUS_SX = {
-  ...HEADER_SX,
-  textAlign: 'center' as const,
-  verticalAlign: 'middle' as const,
-}
-
-const CELL_STATUS_SX = {
-  ...CELL_SX,
-  verticalAlign: 'middle' as const,
-  textAlign: 'center' as const,
-}
-
 const CELL_ACTION_SX = {
   py: '7px',
   pl: 0,
@@ -215,7 +235,6 @@ export default function ExpensesPage() {
   const [search, setSearch] = useState('')
   const [typeTab, setTypeTab] = useState<TypeTab>('all')
   const [filterProjectId, setFilterProjectId] = useState('')
-  const [filterStatus, setFilterStatus] = useState<StatusFilter>('all')
   const [activeFilters, setActiveFilters] = useState<Record<string, unknown>>({
     dateFrom: '',
     dateTo: '',
@@ -235,7 +254,6 @@ export default function ExpensesPage() {
     service: true,
     amount: true,
     date: true,
-    status: true,
   })
 
   const [page, setPage] = useState(0)
@@ -257,7 +275,6 @@ export default function ExpensesPage() {
       page?: number
       typeTab?: TypeTab
       filterProjectId?: string
-      filterStatus?: StatusFilter
       columnFilters?: Partial<ExpenseColumnFilters>
       visibleColumns?: VisibleCols
     } = {}) => {
@@ -265,15 +282,19 @@ export default function ExpensesPage() {
       const nextType = overrides.typeTab ?? typeTab
       const nextProjectId =
         overrides.filterProjectId !== undefined ? overrides.filterProjectId : filterProjectId
-      const nextStatus = overrides.filterStatus ?? filterStatus
       const nextCols = { ...columnFilters, ...overrides.columnFilters }
-      const visibility = overrides.visibleColumns ?? visibleColumns
+      const visibility = listingVisibleColumns(overrides.visibleColumns ?? visibleColumns, nextType)
+      const vendorServiceCols = showsVendorServiceColumns(nextType)
       const dateFrom = String(activeFilters.dateFrom ?? '')
       const dateTo = String(activeFilters.dateTo ?? '')
       if (isInvalidDateRange(dateFrom, dateTo)) {
         setListError('Date from must be on or before date to')
         return
       }
+      const sortField =
+        !vendorServiceCols && (sortConfig.field === 'vendorName' || sortConfig.field === 'service')
+          ? null
+          : sortConfig.field
       const seq = ++requestSeq.current
       setListLoading(true)
       try {
@@ -283,16 +304,15 @@ export default function ExpensesPage() {
           search: search.trim() || undefined,
           type: nextType === 'all' ? undefined : nextType,
           projectId: nextProjectId || undefined,
-          status: nextStatus === 'all' ? undefined : nextStatus,
           dateFrom: nextCols.date || dateFrom || undefined,
           dateTo: nextCols.date || dateTo || undefined,
           description: nextCols.description || undefined,
-          vendorId: nextCols.vendorId || undefined,
-          service: nextCols.service || undefined,
+          vendorId: vendorServiceCols ? nextCols.vendorId || undefined : undefined,
+          service: vendorServiceCols ? nextCols.service || undefined : undefined,
           amount: nextCols.amount ? String(Number(nextCols.amount)) : undefined,
           columns: buildExpenseListColumns(visibility).join(','),
-          sortBy: sortConfig.field || undefined,
-          sortOrder: sortConfig.field ? sortConfig.direction : undefined,
+          sortBy: sortField || undefined,
+          sortOrder: sortField ? sortConfig.direction : undefined,
         })
         if (seq !== requestSeq.current) return
         const data = unwrapApiData<Expense[]>(res.data)
@@ -323,7 +343,6 @@ export default function ExpensesPage() {
       activeFilters,
       columnFilters,
       filterProjectId,
-      filterStatus,
       page,
       pageSize,
       search,
@@ -335,10 +354,15 @@ export default function ExpensesPage() {
   )
 
   useEffect(() => {
-    void financeApi.getExpenseFilters().then((res) => {
-      setFilterOptions(unwrapApiData<Record<string, Array<{ value: string; label: string }>>>(res.data) ?? null)
-    }).catch(() => setFilterOptions(null))
-  }, [])
+    void financeApi
+      .getExpenseFilters({ type: typeTab === 'all' ? undefined : typeTab })
+      .then((res) => {
+        setFilterOptions(
+          unwrapApiData<Record<string, Array<{ value: string; label: string }>>>(res.data) ?? null,
+        )
+      })
+      .catch(() => setFilterOptions(null))
+  }, [typeTab])
 
   useEffect(() => {
     void reloadExpenses()
@@ -440,19 +464,29 @@ export default function ExpensesPage() {
     { label: 'Office Expenses', value: 'office_expenses' },
   ]
 
-  const columnsConfig: ColumnItem[] = useMemo(
-    () => [
+  const displayColumns = useMemo(
+    () => listingVisibleColumns(visibleColumns, typeTab),
+    [visibleColumns, typeTab],
+  )
+
+  const columnsConfig: ColumnItem[] = useMemo(() => {
+    const cols: ColumnItem[] = [
       { field: 'type', label: 'Type', visible: visibleColumns.type },
       { field: 'description', label: 'Description', visible: visibleColumns.description },
       { field: 'project', label: 'Project', visible: visibleColumns.project },
-      { field: 'vendor', label: 'Vendor', visible: visibleColumns.vendor },
-      { field: 'service', label: 'Service', visible: visibleColumns.service },
+    ]
+    if (showsVendorServiceColumns(typeTab)) {
+      cols.push(
+        { field: 'vendor', label: 'Vendor', visible: visibleColumns.vendor },
+        { field: 'service', label: 'Service', visible: visibleColumns.service },
+      )
+    }
+    cols.push(
       { field: 'amount', label: 'Amount', visible: visibleColumns.amount },
       { field: 'date', label: 'Date', visible: visibleColumns.date },
-      { field: 'status', label: 'Status', visible: visibleColumns.status },
-    ],
-    [visibleColumns],
-  )
+    )
+    return cols
+  }, [visibleColumns, typeTab])
 
   function handleColumnVisibilityChange(field: string, visible: boolean) {
     const k = field as keyof VisibleCols
@@ -461,11 +495,11 @@ export default function ExpensesPage() {
     setPage(0)
   }
 
-  const mainColCount = useMemo(() => visibleColCount(visibleColumns), [visibleColumns])
+  const mainColCount = useMemo(() => visibleColCount(displayColumns), [displayColumns])
 
   const visibleDataColCount = useMemo(
-    () => Object.values(visibleColumns).filter(Boolean).length,
-    [visibleColumns],
+    () => Object.values(displayColumns).filter(Boolean).length,
+    [displayColumns],
   )
 
   const dataColWidth = useMemo(
@@ -483,12 +517,11 @@ export default function ExpensesPage() {
           search: search.trim() || undefined,
           type: typeTab === 'all' ? undefined : typeTab,
           projectId: filterProjectId || undefined,
-          status: filterStatus === 'all' ? undefined : filterStatus,
           dateFrom: columnFilters.date || String(activeFilters.dateFrom ?? '') || undefined,
           dateTo: columnFilters.date || String(activeFilters.dateTo ?? '') || undefined,
           description: columnFilters.description || undefined,
-          vendorId: columnFilters.vendorId || undefined,
-          service: columnFilters.service || undefined,
+          vendorId: showsVendorServiceColumns(typeTab) ? columnFilters.vendorId || undefined : undefined,
+          service: showsVendorServiceColumns(typeTab) ? columnFilters.service || undefined : undefined,
           amount: columnFilters.amount ? Number(columnFilters.amount) : undefined,
           sortBy: sortConfig.field || undefined,
           sortOrder: sortConfig.field ? sortConfig.direction : undefined,
@@ -501,8 +534,22 @@ export default function ExpensesPage() {
     }
   }
 
+  function clearVendorServiceFiltersIfNeeded(nextType: TypeTab) {
+    if (showsVendorServiceColumns(nextType)) return
+    setColumnFilters((prev) =>
+      prev.vendorId || prev.service ? { ...prev, vendorId: '', service: '' } : prev,
+    )
+    setSortConfig((prev) =>
+      prev.field === 'vendorName' || prev.field === 'service'
+        ? { field: null, direction: 'asc' }
+        : prev,
+    )
+  }
+
   function handleTabChange(v: string) {
-    setTypeTab(v as TypeTab)
+    const nextType = v as TypeTab
+    setTypeTab(nextType)
+    clearVendorServiceFiltersIfNeeded(nextType)
     setPage(0)
   }
 
@@ -564,13 +611,12 @@ export default function ExpensesPage() {
     setDeleteTarget(null)
   }
 
-  const typeOptions = toColumnFilterOptions(filterOptions?.types)
+  const typeOptions = mergeTypeFilterOptions(filterOptions?.types)
   const descriptionOptions = toColumnFilterOptions(filterOptions?.descriptions)
   const projectOptions = toColumnFilterOptions(filterOptions?.projects)
   const vendorOptions = toColumnFilterOptions(filterOptions?.vendors)
   const serviceOptions = toColumnFilterOptions(filterOptions?.services)
   const amountOptions = toColumnFilterOptions(filterOptions?.amounts)
-  const statusOptions = toColumnFilterOptions(filterOptions?.statuses)
 
   function handleColumnFilter(
     field:
@@ -580,26 +626,24 @@ export default function ExpensesPage() {
       | 'vendorId'
       | 'service'
       | 'amount'
-      | 'date'
-      | 'status',
+      | 'date',
     value: string,
   ) {
     setPage(0)
     if (field === 'type') {
       const nextType = (value || 'all') as TypeTab
       setTypeTab(nextType)
-      void reloadExpenses({ page: 0, typeTab: nextType })
+      clearVendorServiceFiltersIfNeeded(nextType)
+      void reloadExpenses({
+        page: 0,
+        typeTab: nextType,
+        columnFilters: showsVendorServiceColumns(nextType) ? undefined : { vendorId: '', service: '' },
+      })
       return
     }
     if (field === 'projectId') {
       setFilterProjectId(value)
       void reloadExpenses({ page: 0, filterProjectId: value })
-      return
-    }
-    if (field === 'status') {
-      const nextStatus = (value || 'all') as StatusFilter
-      setFilterStatus(nextStatus)
-      void reloadExpenses({ page: 0, filterStatus: nextStatus })
       return
     }
     setColumnFilters((prev) => ({ ...prev, [field]: value }))
@@ -609,7 +653,6 @@ export default function ExpensesPage() {
   function handleResetAll() {
     setSearch('')
     setFilterProjectId('')
-    setFilterStatus('all')
     setActiveFilters({ dateFrom: '', dateTo: '' })
     setColumnFilters({
       description: '',
@@ -647,26 +690,6 @@ export default function ExpensesPage() {
               {p.label}
             </MenuItem>
           ))}
-        </Select>
-      </FormControl>
-      <FormControl size="small" sx={{ minWidth: { xs: 1, sm: 200 } }}>
-        <Select
-          value={filterStatus}
-          onChange={(e) => {
-            setFilterStatus(e.target.value as StatusFilter)
-            setPage(0)
-          }}
-          sx={{ fontSize: 12, height: 32 }}
-        >
-          <MenuItem value="all" sx={{ fontSize: 12 }}>
-            All
-          </MenuItem>
-          <MenuItem value="pending" sx={{ fontSize: 12 }}>
-            Pending
-          </MenuItem>
-          <MenuItem value="included_in_payment" sx={{ fontSize: 12 }}>
-            Included in Payment
-          </MenuItem>
         </Select>
       </FormControl>
     </Stack>
@@ -721,19 +744,18 @@ export default function ExpensesPage() {
         <TableContainer sx={{ overflowX: 'auto', width: '100%' }}>
           <Table size="small" sx={{ tableLayout: 'fixed', width: '100%', minWidth: 0 }}>
             <colgroup>
-              {visibleColumns.type && <col style={{ width: dataColWidth }} />}
-              {visibleColumns.description && <col style={{ width: dataColWidth }} />}
-              {visibleColumns.project && <col style={{ width: dataColWidth }} />}
-              {visibleColumns.vendor && <col style={{ width: dataColWidth }} />}
-              {visibleColumns.service && <col style={{ width: dataColWidth }} />}
-              {visibleColumns.amount && <col style={{ width: dataColWidth }} />}
-              {visibleColumns.date && <col style={{ width: dataColWidth }} />}
-              {visibleColumns.status && <col style={{ width: dataColWidth }} />}
+              {displayColumns.type && <col style={{ width: dataColWidth }} />}
+              {displayColumns.description && <col style={{ width: dataColWidth }} />}
+              {displayColumns.project && <col style={{ width: dataColWidth }} />}
+              {displayColumns.vendor && <col style={{ width: dataColWidth }} />}
+              {displayColumns.service && <col style={{ width: dataColWidth }} />}
+              {displayColumns.amount && <col style={{ width: dataColWidth }} />}
+              {displayColumns.date && <col style={{ width: dataColWidth }} />}
               <col style={{ width: EXP_ACTION_WIDTH_PX }} />
             </colgroup>
             <TableHead>
               <TableRow sx={{ bgcolor: alpha(theme.palette.text.primary, 0.02) }}>
-                {visibleColumns.type && (
+                {displayColumns.type && (
                   <FilterableSortHeader
                     label="Type"
                     field="type"
@@ -746,7 +768,7 @@ export default function ExpensesPage() {
                     sx={HEADER_SX}
                   />
                 )}
-                {visibleColumns.description && (
+                {displayColumns.description && (
                   <FilterableSortHeader
                     label="Description"
                     field="description"
@@ -759,7 +781,7 @@ export default function ExpensesPage() {
                     sx={HEADER_SX}
                   />
                 )}
-                {visibleColumns.project && (
+                {displayColumns.project && (
                   <FilterableSortHeader
                     label="Project"
                     field="projectName"
@@ -772,7 +794,7 @@ export default function ExpensesPage() {
                     sx={HEADER_SX}
                   />
                 )}
-                {visibleColumns.vendor && (
+                {displayColumns.vendor && (
                   <FilterableSortHeader
                     label="Vendor"
                     field="vendorName"
@@ -785,7 +807,7 @@ export default function ExpensesPage() {
                     sx={HEADER_SX}
                   />
                 )}
-                {visibleColumns.service && (
+                {displayColumns.service && (
                   <FilterableSortHeader
                     label="Service"
                     field="service"
@@ -798,7 +820,7 @@ export default function ExpensesPage() {
                     sx={HEADER_SX}
                   />
                 )}
-                {visibleColumns.amount && (
+                {displayColumns.amount && (
                   <FilterableSortHeader
                     label="Amount"
                     field="amount"
@@ -811,7 +833,7 @@ export default function ExpensesPage() {
                     sx={HEADER_SX}
                   />
                 )}
-                {visibleColumns.date && (
+                {displayColumns.date && (
                   <FilterableSortHeader
                     label="Date"
                     field="date"
@@ -825,19 +847,6 @@ export default function ExpensesPage() {
                     sx={HEADER_SX}
                   />
                 )}
-                {visibleColumns.status && (
-                  <FilterableSortHeader
-                    label="Status"
-                    field="status"
-                    sortField={sortConfig.field ?? undefined}
-                    sortDirection={sortConfig.direction}
-                    onSort={handleSort}
-                    filterValue={filterStatus === 'all' ? '' : filterStatus}
-                    filterOptions={statusOptions}
-                    onFilter={(value) => handleColumnFilter('status', value)}
-                    sx={HEADER_STATUS_SX}
-                  />
-                )}
                 <TableCell sx={HEADER_ACTION_SX}>
                   <Box sx={CENTER_CELL_CONTENT_SX}>Action</Box>
                 </TableCell>
@@ -847,7 +856,7 @@ export default function ExpensesPage() {
               {loading &&
                 [...Array(5)].map((_, i) => (
                   <TableRow key={i}>
-                    {[...Array(mainColCount + 1)].map((__, j) => (
+                    {[...Array(mainColCount)].map((__, j) => (
                       <TableCell key={j} sx={CELL_SX}>
                         <Skeleton height={20} />
                       </TableCell>
@@ -857,7 +866,7 @@ export default function ExpensesPage() {
 
               {!loading && projects.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={mainColCount + 1} sx={{ ...CELL_SX, textAlign: 'center', py: 4 }}>
+                  <TableCell colSpan={mainColCount} sx={{ ...CELL_SX, textAlign: 'center', py: 4 }}>
                     <Typography variant="body2" color="text.secondary">
                       No projects loaded
                     </Typography>
@@ -867,7 +876,7 @@ export default function ExpensesPage() {
 
               {!loading && projects.length > 0 && items.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={mainColCount + 1} sx={{ ...CELL_SX, textAlign: 'center', py: 4 }}>
+                  <TableCell colSpan={mainColCount} sx={{ ...CELL_SX, textAlign: 'center', py: 4 }}>
                     <Typography variant="body2" color="text.secondary">
                       No expenses match the filters
                     </Typography>
@@ -877,7 +886,6 @@ export default function ExpensesPage() {
 
               {!loading &&
                 items.map((exp) => {
-                  const st = expenseStatusDisplay(exp.status)
                   const projectLabel = exp.projectName ?? projectNameById[exp.projectId] ?? exp.projectId
                   return (
                     <TableRow
@@ -889,43 +897,36 @@ export default function ExpensesPage() {
                         '&:hover td': { bgcolor: hoverBg },
                       }}
                     >
-                      {visibleColumns.type && (
+                      {displayColumns.type && (
                         <TableCell sx={CELL_SX}>
                           <ExpenseTypeBadge type={exp.type} />
                         </TableCell>
                       )}
-                      {visibleColumns.description && (
+                      {displayColumns.description && (
                         <TableCell sx={CELL_SX}>
                           <Typography variant="body2" sx={{ fontSize: 12, fontWeight: 500 }}>
                             {exp.description}
                           </Typography>
                         </TableCell>
                       )}
-                      {visibleColumns.project && (
+                      {displayColumns.project && (
                         <TableCell sx={CELL_SX}>
                           <Typography variant="body2" sx={{ fontSize: 12 }}>
                             {projectLabel}
                           </Typography>
                         </TableCell>
                       )}
-                      {visibleColumns.vendor && (
+                      {displayColumns.vendor && (
                         <TableCell sx={CELL_SX}>{expenseVendorCell(exp)}</TableCell>
                       )}
-                      {visibleColumns.service && (
+                      {displayColumns.service && (
                         <TableCell sx={CELL_SX}>{expenseServiceCell(exp)}</TableCell>
                       )}
-                      {visibleColumns.amount && (
+                      {displayColumns.amount && (
                         <TableCell sx={CELL_SX}>₹{formatInr(exp.amount)}</TableCell>
                       )}
-                      {visibleColumns.date && (
+                      {displayColumns.date && (
                         <TableCell sx={CELL_SX}>{formatDate(exp.date)}</TableCell>
-                      )}
-                      {visibleColumns.status && (
-                        <TableCell sx={CELL_STATUS_SX}>
-                          <Box sx={CENTER_CELL_CONTENT_SX}>
-                            <StatusBadge status={st.status} label={st.label} size="small" />
-                          </Box>
-                        </TableCell>
                       )}
                       <TableCell sx={CELL_ACTION_SX} onClick={(e) => e.stopPropagation()}>
                         <Box sx={CENTER_CELL_CONTENT_SX}>

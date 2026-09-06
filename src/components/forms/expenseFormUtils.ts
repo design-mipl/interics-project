@@ -1,6 +1,6 @@
 import type { VendorPO } from '@/slices/baseline/reducer'
 import type { Baseline } from '@/slices/baseline/reducer'
-import type { PitchService } from '@/slices/pitch/reducer'
+import type { PitchCategory, PitchService } from '@/slices/pitch/reducer'
 
 /** Contractual PO value for common-expense ratio weights (ignores executedValue). */
 export function vendorPoContractualValue(po: Pick<VendorPO, 'poValue'>): number {
@@ -18,22 +18,28 @@ export interface CommonExpenseAllocation {
 }
 
 export function findServiceInBaseline(baseline: Baseline | null, serviceId: string): PitchService | undefined {
-  if (!baseline) return undefined
+  if (!baseline || !serviceId.trim()) return undefined
   for (const cat of baseline.categories) {
-    const s = cat.services.find((svc) => svc.id === serviceId)
+    const s = cat.services.find(
+      (svc) => svc.id === serviceId || svc.subcategoryId === serviceId,
+    )
     if (s) return s
   }
   return undefined
 }
 
+export type BuildVendorWeight = { vendorId: string; vendorName: string; poSum: number }
+
 /** Unique build vendors mapped on the project via vendor POs. */
 export function getBuildVendorsFromPOs(
   projectVendorPOs: VendorPO[],
-): { vendorId: string; vendorName: string; poSum: number }[] {
+): BuildVendorWeight[] {
   const byVendor = new Map<string, { vendorName: string; poSum: number }>()
   for (const po of projectVendorPOs) {
+    if (!po.vendorId) continue
     const cur = byVendor.get(po.vendorId) ?? { vendorName: po.vendorName, poSum: 0 }
     cur.poSum += vendorPoContractualValue(po)
+    if (po.vendorName) cur.vendorName = po.vendorName
     byVendor.set(po.vendorId, cur)
   }
   return [...byVendor.entries()]
@@ -43,6 +49,222 @@ export function getBuildVendorsFromPOs(
       poSum: v.poSum,
     }))
     .sort((a, b) => a.vendorName.localeCompare(b.vendorName))
+}
+
+/**
+ * Build vendors from baseline pitch vendorMappings (fallback when Live Vendor POs
+ * are not yet created for the project).
+ */
+export function getBuildVendorsFromBaseline(baseline: Baseline | null): BuildVendorWeight[] {
+  if (!baseline) return []
+  const byVendor = new Map<string, { vendorName: string; poSum: number }>()
+  for (const cat of baseline.categories ?? []) {
+    for (const svc of cat.services ?? []) {
+      for (const mapping of svc.vendorMappings ?? []) {
+        if (!mapping.vendorId) continue
+        const cur = byVendor.get(mapping.vendorId) ?? {
+          vendorName: mapping.vendorName || 'Vendor',
+          poSum: 0,
+        }
+        cur.poSum += Number(mapping.value) || 0
+        if (mapping.vendorName) cur.vendorName = mapping.vendorName
+        byVendor.set(mapping.vendorId, cur)
+      }
+    }
+  }
+  return [...byVendor.entries()]
+    .map(([vendorId, v]) => ({
+      vendorId,
+      vendorName: v.vendorName,
+      poSum: v.poSum,
+    }))
+    .sort((a, b) => a.vendorName.localeCompare(b.vendorName))
+}
+
+/** Prefer Vendor POs; fall back to baseline vendorMappings so Paid By / Vendor Linked stay usable. */
+export function resolveLiveBuildVendors(
+  projectVendorPOs: VendorPO[],
+  baseline: Baseline | null,
+): BuildVendorWeight[] {
+  const fromPos = getBuildVendorsFromPOs(projectVendorPOs)
+  if (fromPos.length > 0) return fromPos
+  return getBuildVendorsFromBaseline(baseline)
+}
+
+export type VendorLinkedServiceOption = {
+  baselineServiceId: string
+  name: string
+  adjustedValue: number
+}
+
+const RAW_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+/** True when a label is empty or looks like a stored id (UUID), not a service name. */
+export function looksLikeServiceIdLabel(value: string | null | undefined): boolean {
+  const trimmed = (value ?? '').trim()
+  if (!trimmed) return true
+  if (RAW_ID_RE.test(trimmed)) return true
+  return false
+}
+
+function pitchServiceDisplayName(svc: PitchService): string | null {
+  const candidates = [svc.subcategoryName, svc.name, svc.customName]
+  for (const candidate of candidates) {
+    const label = (candidate ?? '').trim()
+    if (!label || looksLikeServiceIdLabel(label)) continue
+    if (label === svc.id || label === svc.subcategoryId) continue
+    return label
+  }
+  return null
+}
+
+function serviceMatchesLinkedId(svc: PitchService, linkedId: string): boolean {
+  if (!linkedId) return false
+  return (
+    svc.id === linkedId ||
+    svc.subcategoryId === linkedId ||
+    (svc.customName != null && svc.customName === linkedId) ||
+    (svc.name != null && svc.name === linkedId) ||
+    (svc.subcategoryName != null && svc.subcategoryName === linkedId)
+  )
+}
+
+/** Normalize PO linked-service payloads (array, single string, or JSON string). */
+export function normalizeLinkedServiceIds(value: unknown): string[] {
+  if (value == null) return []
+  if (Array.isArray(value)) {
+    return value
+      .map((id) => String(id ?? '').trim())
+      .filter(Boolean)
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return []
+    if (trimmed.startsWith('[')) {
+      try {
+        return normalizeLinkedServiceIds(JSON.parse(trimmed) as unknown)
+      } catch {
+        return [trimmed]
+      }
+    }
+    return [trimmed]
+  }
+  return []
+}
+
+function findServiceByLinkedId(
+  categories: PitchCategory[],
+  linkedId: string,
+): PitchService | undefined {
+  for (const cat of categories) {
+    const hit = (cat.services ?? []).find((svc) => serviceMatchesLinkedId(svc, linkedId))
+    if (hit) return hit
+  }
+  return undefined
+}
+
+function findServiceByVendorMappingId(
+  categories: PitchCategory[],
+  mappingId: string,
+): PitchService | undefined {
+  if (!mappingId.trim()) return undefined
+  for (const cat of categories) {
+    for (const svc of cat.services ?? []) {
+      if ((svc.vendorMappings ?? []).some((m) => m.id === mappingId)) return svc
+    }
+  }
+  return undefined
+}
+
+function collectVendorPoLinkedServiceIds(
+  vendorId: string,
+  projectVendorPOs: VendorPO[],
+): string[] {
+  const ids = new Set<string>()
+  for (const po of projectVendorPOs) {
+    if (po.vendorId !== vendorId) continue
+    for (const id of normalizeLinkedServiceIds(po.linkedBaselineServiceIds)) {
+      ids.add(id)
+    }
+    const mappingId = po.linkedVendorMappingId?.trim()
+    if (mappingId) ids.add(`mapping:${mappingId}`)
+    for (const milestone of po.milestones ?? []) {
+      const mid = milestone.serviceId?.trim()
+      if (mid) ids.add(mid)
+    }
+  }
+  return [...ids]
+}
+
+function mergeCategoryCatalogs(
+  baseline: Baseline | null,
+  extraCategories?: PitchCategory[] | null,
+): PitchCategory[] {
+  const out: PitchCategory[] = []
+  if (baseline?.categories?.length) out.push(...baseline.categories)
+  if (extraCategories?.length) out.push(...extraCategories)
+  return out
+}
+
+/**
+ * Services provided by a vendor on the selected project.
+ * Options only include resolved human-readable service names (never raw ids).
+ */
+export function servicesForVendorLinkedExpense(
+  baseline: Baseline | null,
+  vendorId: string,
+  projectVendorPOs: VendorPO[],
+  extraCategories?: PitchCategory[] | null,
+): VendorLinkedServiceOption[] {
+  const categories = mergeCategoryCatalogs(baseline, extraCategories)
+
+  const toOption = (svc: PitchService): VendorLinkedServiceOption | null => {
+    const name = pitchServiceDisplayName(svc)
+    if (!name) return null
+    return {
+      baselineServiceId: svc.id,
+      name,
+      adjustedValue: svc.value,
+    }
+  }
+
+  const out: VendorLinkedServiceOption[] = []
+  const seen = new Set<string>()
+  const pushResolved = (svc: PitchService | undefined) => {
+    if (!svc || seen.has(svc.id)) return
+    const option = toOption(svc)
+    if (!option) return
+    seen.add(svc.id)
+    out.push(option)
+  }
+
+  if (!vendorId) {
+    for (const cat of categories) {
+      for (const svc of cat.services ?? []) {
+        pushResolved(svc)
+      }
+    }
+    return out
+  }
+
+  for (const token of collectVendorPoLinkedServiceIds(vendorId, projectVendorPOs)) {
+    if (token.startsWith('mapping:')) {
+      const mappingId = token.slice('mapping:'.length)
+      pushResolved(findServiceByVendorMappingId(categories, mappingId))
+      continue
+    }
+    pushResolved(findServiceByLinkedId(categories, token))
+  }
+
+  for (const cat of categories) {
+    for (const svc of cat.services ?? []) {
+      const mapped = (svc.vendorMappings ?? []).some((m) => m.vendorId === vendorId)
+      if (mapped) pushResolved(svc)
+    }
+  }
+
+  return out
 }
 
 function distributeRoundedAmounts(amount: number, weights: number[]): number[] {
@@ -137,12 +359,6 @@ export function computeAllocationsForVendors(
     return computeEqualSplitAllocations(amount, vendors)
   }
   return computeProportionalAllocations(amount, vendors)
-}
-
-export interface BuildVendorWeight {
-  vendorId: string
-  vendorName: string
-  poSum: number
 }
 
 export function sameVendorIdSet(a: string[], b: string[]): boolean {

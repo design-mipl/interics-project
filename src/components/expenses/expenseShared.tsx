@@ -84,16 +84,43 @@ export function ExpenseTypeBadge({ type }: { type: ExpenseType }) {
   }
 }
 
+export function expenseTypeFilterLabel(type: string): string {
+  switch (type) {
+    case 'additional':
+      return 'Additional'
+    case 'vendor_linked':
+      return 'Vendor Linked'
+    case 'common':
+      return 'Common'
+    case 'office_expenses':
+      return 'Office Expenses'
+    case 'reimbursable_expenses':
+      return 'Reimbursable Expenses'
+    default:
+      return type
+        .split('_')
+        .filter(Boolean)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+        .join(' ')
+  }
+}
+
 export function expenseVendorCell(e: Expense): string {
   if (e.type === 'additional' || e.type === 'office_expenses') return '—'
-  if (e.type === 'vendor_linked' || e.type === 'reimbursable_expenses') return e.vendorName ?? '—'
+  if (e.type === 'vendor_linked' || e.type === 'reimbursable_expenses') return e.vendorName?.trim() || '—'
   const n = e.vendorAllocations?.length ?? 0
   return n === 0 ? '—' : `${n} vendors`
 }
 
+function expenseServiceLabel(e: Expense): string {
+  const extra = e as Expense & { service?: unknown }
+  const fromName = e.serviceName?.trim()
+  const fromService = typeof extra.service === 'string' ? extra.service.trim() : ''
+  return fromName || fromService || ''
+}
+
 export function expenseServiceCell(e: Expense): string {
-  if (e.type === 'vendor_linked' || e.type === 'reimbursable_expenses') return e.serviceName ?? '—'
-  return '—'
+  return expenseServiceLabel(e) || '—'
 }
 
 function splitMethodLabel(method?: CommonExpenseSplitMethod): string {
@@ -103,7 +130,7 @@ function splitMethodLabel(method?: CommonExpenseSplitMethod): string {
 
 function expenseVendorServiceDetail(expense: Expense): string {
   if (expense.type === 'vendor_linked' || expense.type === 'reimbursable_expenses') {
-    return `${expense.vendorName ?? '—'} · ${expense.serviceName ?? '—'}`
+    return `${expense.vendorName?.trim() || '—'} · ${expenseServiceLabel(expense) || '—'}`
   }
   if (expense.type === 'common') {
     const count = expense.vendorAllocations?.length ?? 0

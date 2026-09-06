@@ -128,9 +128,10 @@ export function flattenBaselineServices(baseline: Baseline | null): FlatBaseline
   const out: FlatBaselineServiceRow[] = []
   for (const cat of categories) {
     for (const svc of cat.services ?? []) {
+      const name = (svc.subcategoryName ?? svc.name ?? svc.customName ?? '').trim() || 'Service'
       out.push({
         baselineServiceId: svc.id,
-        name: svc.name,
+        name,
         adjustedValue: svc.value,
       })
     }

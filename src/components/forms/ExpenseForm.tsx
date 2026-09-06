@@ -44,6 +44,8 @@ import {
   expenseSharePercent,
   findServiceInBaseline,
   getBuildVendorsFromPOs,
+  resolveLiveBuildVendors,
+  servicesForVendorLinkedExpense,
   selectedBuildVendorPoWeight,
   type CommonExpenseAllocation,
 } from '@/components/forms/expenseFormUtils'
@@ -199,6 +201,41 @@ export const ExpenseForm = forwardRef<ExpenseFormHandle, ExpenseFormProps>(funct
   ]
 
   const baselineServices = useMemo(() => flattenBaselineServices(baseline ?? null), [baseline])
+  const projectVendorPOs = useMemo(() => {
+    if (!effectiveProjectId) return [] as typeof vendorPOs
+    const matched = vendorPOs.filter((p) => p.projectId === effectiveProjectId)
+    // listVendorPos is fetched per project and replaces store state; if projectId is
+    // missing on a row, still treat the current payload as belonging to this project.
+    if (matched.length > 0) return matched
+    if (vendorPOs.length > 0 && vendorPOs.every((p) => !p.projectId || p.projectId === effectiveProjectId)) {
+      return vendorPOs
+    }
+    return matched
+  }, [vendorPOs, effectiveProjectId])
+
+  const vendorLinkedServiceOptions = useMemo(() => {
+    if (liveType !== 'vendor_linked') return baselineServices
+    const options = servicesForVendorLinkedExpense(
+      baseline ?? null,
+      liveVendorId,
+      projectVendorPOs,
+      !isPitch ? pitchVersion?.categories : undefined,
+    )
+    if (serviceId && !options.some((s) => s.baselineServiceId === serviceId)) {
+      const current = baselineServices.find((s) => s.baselineServiceId === serviceId)
+      if (current) return [current, ...options]
+    }
+    return options
+  }, [
+    baseline,
+    baselineServices,
+    isPitch,
+    liveType,
+    liveVendorId,
+    pitchVersion?.categories,
+    projectVendorPOs,
+    serviceId,
+  ])
   const milestonesForService = useMemo(() => {
     const all = flattenBaselineMilestones(baseline ?? null)
     if (!serviceId) return []
@@ -237,14 +274,9 @@ export const ExpenseForm = forwardRef<ExpenseFormHandle, ExpenseFormProps>(funct
     return vendorMappingOptionsPitch.find((m) => m.id === mappingId)
   }, [vendorMappingOptionsPitch, mappingId])
 
-  const projectVendorPOs = useMemo(
-    () => vendorPOs.filter((p) => p.projectId === effectiveProjectId),
-    [vendorPOs, effectiveProjectId],
-  )
-
   const buildVendors = useMemo(
-    () => getBuildVendorsFromPOs(projectVendorPOs),
-    [projectVendorPOs],
+    () => resolveLiveBuildVendors(projectVendorPOs, baseline ?? null),
+    [projectVendorPOs, baseline],
   )
 
   const pitchBuildVendors = useMemo(() => {
@@ -579,10 +611,11 @@ export const ExpenseForm = forwardRef<ExpenseFormHandle, ExpenseFormProps>(funct
     if (isLiveOrGlobal && !effectiveProjectId) return false
     if (isPitch && !pitchVersion) return false
 
+    const descriptionOk = description.trim().length > 0
+
     if (isPitch) {
-      const nameOk = description.trim().length > 0
       const amtOk = amountNum > 0
-      if (!nameOk || !amtOk) return false
+      if (!descriptionOk || !amtOk) return false
       if (pitchType === 'additional' || pitchType === 'office_expenses') {
         return true
       }
@@ -594,10 +627,11 @@ export const ExpenseForm = forwardRef<ExpenseFormHandle, ExpenseFormProps>(funct
       return false
     }
 
+    if (!descriptionOk) return false
     if (amountNum <= 0) return false
     if (!date.trim()) return false
     if (liveType === 'vendor_linked') {
-      return Boolean(selectedLiveVendor)
+      return Boolean(selectedLiveVendor && serviceId)
     }
     if (liveType === 'reimbursable_expenses') {
       return Boolean(serviceId && selectedLiveVendor)
@@ -664,12 +698,14 @@ export const ExpenseForm = forwardRef<ExpenseFormHandle, ExpenseFormProps>(funct
         }
       }
     } else {
+      if (!description.trim()) next.description = 'Description is required'
       if (!amount.trim()) next.amount = 'Amount is required'
       else if (!(amountNum > 0)) next.amount = 'Enter a valid amount greater than 0'
       if (!date.trim()) next.date = 'Date is required'
 
       if (liveType === 'vendor_linked') {
         if (!selectedLiveVendor) next.mappingId = 'Vendor is required'
+        if (!serviceId) next.serviceId = 'Service is required'
       } else if (liveType === 'reimbursable_expenses') {
         if (!serviceId) next.serviceId = 'Service is required'
         if (!selectedLiveVendor) next.mappingId = 'Vendor is required'
@@ -801,6 +837,7 @@ export const ExpenseForm = forwardRef<ExpenseFormHandle, ExpenseFormProps>(funct
 
     if (liveType === 'vendor_linked') {
       if (!selectedLiveVendor) return
+      const svc = findServiceInBaseline(baseline ?? null, serviceId)
       const data: CreateExpenseBody = {
         type: 'vendor_linked',
         description: description.trim(),
@@ -809,6 +846,11 @@ export const ExpenseForm = forwardRef<ExpenseFormHandle, ExpenseFormProps>(funct
         documentUrl: finalDocumentUrl,
         vendorId: selectedLiveVendor.id,
         vendorName: selectedLiveVendor.name,
+        serviceId: serviceId || undefined,
+        serviceName:
+          (svc?.subcategoryName ?? svc?.name ?? svc?.customName)?.trim() ||
+          vendorLinkedServiceOptions.find((s) => s.baselineServiceId === serviceId)?.name ||
+          undefined,
         status: 'pending',
       }
       onSubmit({ mode: 'live_expense', projectId: pid, data })
@@ -896,6 +938,7 @@ export const ExpenseForm = forwardRef<ExpenseFormHandle, ExpenseFormProps>(funct
     pendingDocumentFile,
     selectedLiveVendor,
     milestonesForService,
+    vendorLinkedServiceOptions,
     projectVendorPOs,
     paidByVendorId,
     allocatedVendorIds,
@@ -1002,7 +1045,7 @@ export const ExpenseForm = forwardRef<ExpenseFormHandle, ExpenseFormProps>(funct
         )}
         <FormField
           label={isPitch ? 'Expense name' : 'Description'}
-          required={isPitch}
+          required
           error={fieldErrors.description}
         >
           <Input
@@ -1142,7 +1185,12 @@ export const ExpenseForm = forwardRef<ExpenseFormHandle, ExpenseFormProps>(funct
               value={liveVendorId}
               onChange={(e) => {
                 setLiveVendorId(e.target.value)
-                setFieldErrors((prev) => ({ ...prev, mappingId: undefined }))
+                setServiceId('')
+                setFieldErrors((prev) => ({
+                  ...prev,
+                  mappingId: undefined,
+                  serviceId: undefined,
+                }))
               }}
               fullWidth
               disabled={projectBuildVendorOptions.length === 0}
@@ -1155,6 +1203,41 @@ export const ExpenseForm = forwardRef<ExpenseFormHandle, ExpenseFormProps>(funct
               {projectBuildVendorOptions.map((v) => (
                 <MenuItem key={v.id} value={v.id} sx={{ fontSize: 12 }}>
                   {v.name}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormField>
+          <FormField
+            label="Service"
+            required
+            error={fieldErrors.serviceId}
+            hint={
+              liveVendorId && vendorLinkedServiceOptions.length === 0
+                ? 'No services linked to this vendor on the selected project'
+                : !liveVendorId
+                  ? 'Select a vendor to load their project services'
+                  : undefined
+            }
+          >
+            <Select
+              size="small"
+              displayEmpty
+              value={serviceId}
+              onChange={(e) => {
+                setServiceId(e.target.value)
+                setFieldErrors((prev) => ({ ...prev, serviceId: undefined }))
+              }}
+              fullWidth
+              disabled={!liveVendorId || vendorLinkedServiceOptions.length === 0}
+              error={Boolean(fieldErrors.serviceId)}
+              sx={{ fontSize: 12 }}
+            >
+              <MenuItem value="" sx={{ fontSize: 12 }}>
+                Select service
+              </MenuItem>
+              {vendorLinkedServiceOptions.map((s) => (
+                <MenuItem key={s.baselineServiceId} value={s.baselineServiceId} sx={{ fontSize: 12 }}>
+                  {s.name}
                 </MenuItem>
               ))}
             </Select>

@@ -25,6 +25,7 @@ import {
 } from '../../../../slices/live/thunk'
 import { isReimbursableExpenseType } from '@/utils/reimbursableSync'
 import { fetchBaseline, fetchVendorPOs } from '../../../../slices/baseline/thunk'
+import { fetchVersions } from '@/slices/pitch/thunk'
 import type { Expense, ExpenseType } from '../../../../slices/live/reducer'
 import { formatCurrency, formatDate } from '../../../../utils/formatters'
 import {
@@ -40,6 +41,9 @@ import {
   expenseStatusDisplay,
   expenseVendorCell,
 } from '@/components/expenses/expenseShared'
+import { resolvePitchVersionForProject } from '@/store/selectors/pitchSelectors'
+import type { PitchVersion } from '@/slices/pitch/reducer'
+import type { Baseline, VendorPO } from '@/slices/baseline/reducer'
 
 type ExpenseFilter = 'all' | ExpenseType
 
@@ -67,6 +71,7 @@ function AddExpenseDrawer({
   open,
   projectId,
   baseline,
+  pitchVersion,
   vendorPOs,
   filter,
   onClose,
@@ -74,8 +79,9 @@ function AddExpenseDrawer({
 }: {
   open: boolean
   projectId: string
-  baseline: import('../../../../slices/baseline/reducer').Baseline | null
-  vendorPOs: import('../../../../slices/baseline/reducer').VendorPO[]
+  baseline: Baseline | null
+  pitchVersion: PitchVersion | null
+  vendorPOs: VendorPO[]
   filter: ExpenseFilter
   onClose: () => void
   onSaved: () => void
@@ -130,6 +136,7 @@ function AddExpenseDrawer({
         context="live"
         projectId={projectId}
         baseline={baseline?.projectId === projectId ? baseline : null}
+        pitchVersion={pitchVersion?.projectId === projectId ? pitchVersion : null}
         vendorPOs={vendorPOs}
         open={open}
         onSubmit={handleSubmit}
@@ -148,6 +155,12 @@ interface ExpensesTabProps {
 export default function ExpensesTab({ projectId }: ExpensesTabProps) {
   const dispatch = useAppDispatch()
   const { baseline, vendorPOs } = useAppSelector((s) => s.baseline)
+  const pitchVersions = useAppSelector((s) => s.pitch.versions ?? [])
+  const activePitchVersion = useAppSelector((s) => s.pitch.activeVersion)
+  const pitchVersion = useMemo(
+    () => resolvePitchVersionForProject(projectId, activePitchVersion, pitchVersions),
+    [projectId, activePitchVersion, pitchVersions],
+  )
   const [filter, setFilter] = useState<ExpenseFilter>('all')
   const [addOpen, setAddOpen] = useState(false)
   const [viewExpense, setViewExpense] = useState<Expense | null>(null)
@@ -186,6 +199,7 @@ export default function ExpensesTab({ projectId }: ExpensesTabProps) {
   useEffect(() => {
     void dispatch(fetchBaseline(projectId))
     void dispatch(fetchVendorPOs(projectId))
+    void dispatch(fetchVersions(projectId))
     void refreshSummary()
   }, [dispatch, projectId, refreshSummary])
 
@@ -272,8 +286,12 @@ export default function ExpensesTab({ projectId }: ExpensesTabProps) {
             <TableRow>
               <TableCell sx={TABLE_HEADER_SX}>Type</TableCell>
               <TableCell sx={TABLE_HEADER_SX}>Description</TableCell>
-              <TableCell sx={TABLE_HEADER_SX}>Vendor</TableCell>
-              <TableCell sx={TABLE_HEADER_SX}>Service</TableCell>
+              {filter === 'all' || filter === 'vendor_linked' ? (
+                <TableCell sx={TABLE_HEADER_SX}>Vendor</TableCell>
+              ) : null}
+              {filter === 'all' || filter === 'vendor_linked' ? (
+                <TableCell sx={TABLE_HEADER_SX}>Service</TableCell>
+              ) : null}
               <TableCell sx={TABLE_HEADER_SX}>
                 <TableSortLabel
                   active={sortBy === 'amount'}
@@ -301,7 +319,10 @@ export default function ExpensesTab({ projectId }: ExpensesTabProps) {
           <TableBody>
             {filtered.length === 0 && (
               <TableRow>
-                <TableCell colSpan={8} sx={{ ...TABLE_CELL_SX, textAlign: 'center', py: 4 }}>
+                <TableCell
+                  colSpan={filter === 'all' || filter === 'vendor_linked' ? 8 : 6}
+                  sx={{ ...TABLE_CELL_SX, textAlign: 'center', py: 4 }}
+                >
                   <Typography variant="body2" color="text.secondary">
                     No expenses yet
                   </Typography>
@@ -320,8 +341,12 @@ export default function ExpensesTab({ projectId }: ExpensesTabProps) {
                       {exp.description}
                     </Typography>
                   </TableCell>
-                  <TableCell sx={TABLE_CELL_SX}>{expenseVendorCell(exp)}</TableCell>
-                  <TableCell sx={TABLE_CELL_SX}>{expenseServiceCell(exp)}</TableCell>
+                  {filter === 'all' || filter === 'vendor_linked' ? (
+                    <TableCell sx={TABLE_CELL_SX}>{expenseVendorCell(exp)}</TableCell>
+                  ) : null}
+                  {filter === 'all' || filter === 'vendor_linked' ? (
+                    <TableCell sx={TABLE_CELL_SX}>{expenseServiceCell(exp)}</TableCell>
+                  ) : null}
                   <TableCell sx={TABLE_CELL_SX}>
                     ₹{formatCurrency(exp.amount)}
                   </TableCell>
@@ -349,6 +374,7 @@ export default function ExpensesTab({ projectId }: ExpensesTabProps) {
         open={addOpen}
         projectId={projectId}
         baseline={baseline?.projectId === projectId ? baseline : null}
+        pitchVersion={pitchVersion?.projectId === projectId ? pitchVersion : null}
         vendorPOs={vendorPOs}
         filter={filter}
         onClose={() => setAddOpen(false)}

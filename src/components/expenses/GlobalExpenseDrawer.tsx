@@ -8,6 +8,7 @@ import {
 import { useAppDispatch, useAppSelector } from '@/store/hooks'
 import { fetchProjects } from '@/slices/projects/thunk'
 import { fetchBaseline, fetchVendorPOs } from '@/slices/baseline/thunk'
+import { fetchVersions } from '@/slices/pitch/thunk'
 import {
   createExpense,
   fetchExpenses,
@@ -17,6 +18,7 @@ import {
 import type { Expense } from '@/slices/live/types'
 import { isReimbursableExpenseType } from '@/utils/reimbursableSync'
 import { useToast } from '@/design-system/components'
+import { resolvePitchVersionForProject } from '@/store/selectors/pitchSelectors'
 
 export interface GlobalExpenseDrawerProps {
   open: boolean
@@ -37,6 +39,8 @@ export function GlobalExpenseDrawer({
   const toast = useToast()
   const projects = useAppSelector((s) => s.projects.items ?? [])
   const { baseline, vendorPOs } = useAppSelector((s) => s.baseline)
+  const pitchVersions = useAppSelector((s) => s.pitch.versions ?? [])
+  const activePitchVersion = useAppSelector((s) => s.pitch.activeVersion)
   const { saving } = useAppSelector((s) => s.live)
 
   const formRef = useRef<ExpenseFormHandle>(null)
@@ -60,7 +64,16 @@ export function GlobalExpenseDrawer({
     if (!selectedProjectId) return
     void dispatch(fetchBaseline(selectedProjectId))
     void dispatch(fetchVendorPOs(selectedProjectId))
+    void dispatch(fetchVersions(selectedProjectId))
   }, [selectedProjectId, dispatch])
+
+  const pitchVersion = useMemo(
+    () =>
+      selectedProjectId
+        ? resolvePitchVersionForProject(selectedProjectId, activePitchVersion, pitchVersions)
+        : null,
+    [selectedProjectId, activePitchVersion, pitchVersions],
+  )
 
   const projectOptions = useMemo(
     () => projects.map((p) => ({ id: p.id, label: p.name })),
@@ -122,6 +135,7 @@ export function GlobalExpenseDrawer({
         onSelectedProjectIdChange={setSelectedProjectId}
         projectOptions={projectOptions}
         baseline={baseline?.projectId === selectedProjectId ? baseline : null}
+        pitchVersion={pitchVersion?.projectId === selectedProjectId ? pitchVersion : null}
         vendorPOs={vendorPOs}
         editingExpense={editingExpense}
         open={open}
