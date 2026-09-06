@@ -14,15 +14,20 @@ export function SettlementSummaryStrip({
   kpis: kpisProp,
   vendorPOs,
   payments,
+  loading = false,
 }: {
   /** Prefer server summary from GET /finance/payables/summary. */
   kpis?: PayableSummaryKpis | null
   vendorPOs?: VendorPO[]
   payments?: VendorPayment[]
+  /** Per-card value loader while summary is fetching. */
+  loading?: boolean
 }) {
   const kpis =
     kpisProp ??
-    computePayableSummaryKpis(vendorPOs ?? [], payments ?? [])
+    (loading
+      ? { totalVendorPoValue: 0, paidTillDate: 0, pendingPayment: 0 }
+      : computePayableSummaryKpis(vendorPOs ?? [], payments ?? []))
 
   const metrics: {
     label: string
@@ -66,6 +71,7 @@ export function SettlementSummaryStrip({
           value={m.value}
           variant={m.variant}
           icon={m.icon}
+          loading={loading}
         />
       ))}
     </Box>

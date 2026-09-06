@@ -84,6 +84,8 @@ export interface Invoice {
   documentUrl?: string | null
   fileName?: string | null
   pendingGeneration?: boolean
+  /** UI-only: show partially-paid badge alongside mapped tab status */
+  showPartialPaid?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -140,7 +142,7 @@ const initialState: ReceivablesState = {
     amountMin: '',
     amountMax: '',
   },
-  sortConfig: { field: 'invoiceDate', direction: 'desc' },
+  sortConfig: { field: null, direction: 'desc' },
   pagination: { page: 1, pageSize: 10, total: 0 },
   listRequestId: null,
 }

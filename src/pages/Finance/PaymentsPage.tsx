@@ -9,8 +9,6 @@ import {
   TableBody,
   TableRow,
   TableCell,
-  FormControl,
-  Select,
   MenuItem,
   IconButton,
   Menu,
@@ -21,10 +19,9 @@ import { useTheme, alpha } from '@mui/material/styles'
 import MoreVertIcon from '@mui/icons-material/MoreVert'
 import { Banknote, Upload } from 'lucide-react'
 import { ListingTemplate } from '@/components/templates'
-import type { ColumnItem, FilterField, TabItem } from '@/components/templates/ListingTemplate'
+import type { ColumnItem, TabItem } from '@/components/templates/ListingTemplate'
 import {
   FilterableSortHeader,
-  isInvalidDateRange,
   clampListingPage0Based,
   type ColumnFilterOption,
 } from '@/components/listing'
@@ -59,7 +56,6 @@ import { hydrateVendorInvoices } from '@/slices/live/reducer'
 import type { Baseline, VendorPO } from '@/slices/baseline/reducer'
 import {
   baselineVendorMilestoneEntries,
-  baselineVendorServiceRows,
   mergeMilestoneEntriesWithVendorPO,
   vendorInvoiceMilestoneEntries,
   vendorPOVendorMilestoneEntries,
@@ -73,16 +69,9 @@ import {
   type PayablePaymentStatus,
   type UploadVendorInvoiceInitialSelection,
   type VendorMilestoneEntry,
-  type VendorServiceRow,
   type VendorPayableDrawerFocus,
 } from '@/pages/Projects/tabs/live/vendorSettlement'
 import { usePermission } from '@/hooks/usePermission'
-
-interface CardEntry {
-  projectId: string
-  projectName: string
-  row: VendorServiceRow
-}
 
 interface PaymentTableRow {
   key: string
@@ -271,6 +260,7 @@ const PAY_TEXT_BODY_SX = {
 }
 
 const PAY_PAGE_SIZE = 10
+const MIN_PAYABLES_VISIBLE_COLUMNS = 5
 
 const KPI_PERIOD_OPTIONS: { label: string; value: ReceivableKpiPeriod }[] = [
   { label: 'Today', value: 'Today' },
@@ -328,6 +318,7 @@ export default function PaymentsPage() {
   const [vendorPOsByProject, setVendorPOsByProject] = useState<Record<string, VendorPO[]>>({})
   const [financeLoaded, setFinanceLoaded] = useState(false)
   const [summaryKpis, setSummaryKpis] = useState<PayableSummaryKpis | null>(null)
+  const [summaryLoading, setSummaryLoading] = useState(true)
   const [kpiPeriod, setKpiPeriod] = useState<ReceivableKpiPeriod>('This Month')
   const [kpiCustomFrom, setKpiCustomFrom] = useState<Date | null>(null)
   const [kpiCustomTo, setKpiCustomTo] = useState<Date | null>(null)
@@ -343,23 +334,12 @@ export default function PaymentsPage() {
     Boolean(kpiCustomFrom && kpiCustomTo) &&
     kpiDateBounds === null
 
-  const [filterProjectId, setFilterProjectId] = useState('')
-  const [filterVendorId, setFilterVendorId] = useState('')
   const [search, setSearch] = useState('')
   const [statusTab, setStatusTab] = useState<PayableStatusTab>('pending')
-  const [activeFilters, setActiveFilters] = useState<Record<string, unknown>>({
-    dateFrom: '',
-    dateTo: '',
-  })
 
   const effectiveKpiDates = useMemo(
-    () =>
-      mergeReceivableListDateParams(
-        kpiDateBounds,
-        String(activeFilters.dateFrom ?? ''),
-        String(activeFilters.dateTo ?? ''),
-      ),
-    [kpiDateBounds, activeFilters.dateFrom, activeFilters.dateTo],
+    () => mergeReceivableListDateParams(kpiDateBounds, '', ''),
+    [kpiDateBounds],
   )
 
   const [page, setPage] = useState(0)
@@ -384,6 +364,7 @@ export default function PaymentsPage() {
     focus: VendorPayableDrawerFocus
     readOnly: boolean
     invoiceId: string
+    invoiceDate: string
     paymentStatus: PayablePaymentStatus
   } | null>(null)
   const [uploadOpen, setUploadOpen] = useState(false)
@@ -398,21 +379,69 @@ export default function PaymentsPage() {
       .getLiveProjects()
       .then((options) => setLiveProjectIds(options.map((o) => o.value)))
       .catch(() => setLiveProjectIds([]))
-    void payablesService.getFilters().then((data) => {
-      setPayableFilterOptions({
-        vendorId: data.vendors ?? [],
-        projectId: data.projects ?? [],
-        milestone: data.milestones ?? [],
-        invoiceNo: data.invoiceNos ?? [],
-        invoiceDate: data.invoiceDates ?? [],
-        gstAmount: data.gstAmounts ?? [],
-        totalAmount: data.totalAmounts ?? [],
-        invoiceAmount: data.invoiceAmounts ?? [],
-        tdsAmount: data.tdsAmounts ?? [],
-        paymentStatus: data.paymentStatuses ?? [],
-      })
-    }).catch(() => undefined)
   }, [dispatch])
+
+  useEffect(() => {
+    let cancelled = false
+    setPayableFilterOptions({})
+    void payablesService
+      .getFilters({ paymentStatus: statusTab })
+      .then((data) => {
+        if (cancelled) return
+        const projects = data.projects ?? []
+        const vendors = data.vendors ?? []
+        const milestones = data.milestones ?? []
+        const invoiceNos = data.invoiceNos ?? []
+        const invoiceDates = data.invoiceDates ?? []
+        const gstAmounts = data.gstAmounts ?? []
+        const totalAmounts = data.totalAmounts ?? []
+        const invoiceAmounts = data.invoiceAmounts ?? []
+        const tdsAmounts = data.tdsAmounts ?? []
+        const paymentStatuses = data.paymentStatuses ?? []
+        setPayableFilterOptions({
+          vendorId: vendors,
+          projectId: projects,
+          milestone: milestones,
+          invoiceNo: invoiceNos,
+          invoiceDate: invoiceDates,
+          gstAmount: gstAmounts,
+          totalAmount: totalAmounts,
+          invoiceAmount: invoiceAmounts,
+          tdsAmount: tdsAmounts,
+          paymentStatus: paymentStatuses,
+        })
+        setColFilters((prev) => {
+          if (Object.keys(prev).length === 0) return prev
+          const next = { ...prev }
+          const optionSets: Record<string, { value: string }[]> = {
+            vendorId: vendors,
+            projectId: projects,
+            milestone: milestones,
+            invoiceNo: invoiceNos,
+            invoiceDate: invoiceDates,
+            gstAmount: gstAmounts,
+            totalAmount: totalAmounts,
+            invoiceAmount: invoiceAmounts,
+            tdsAmount: tdsAmounts,
+            paymentStatus: paymentStatuses,
+          }
+          let changed = false
+          for (const [field, selected] of Object.entries(next)) {
+            const options = optionSets[field]
+            if (!options) continue
+            if (!options.some((option) => option.value === selected)) {
+              delete next[field]
+              changed = true
+            }
+          }
+          return changed ? next : prev
+        })
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [statusTab])
 
   // One workspace call replaces N× baseline + vendor-PO + invoice + payments + expenses…
   useEffect(() => {
@@ -454,14 +483,17 @@ export default function PaymentsPage() {
   // Summary KPIs: Live Overview vendor metrics (poDate) with merged global + toolbar dates
   useEffect(() => {
     if (kpiCustomInvalid) {
+      setSummaryLoading(false)
       setSummaryKpis(null)
       return
     }
     if (kpiCustomIncomplete && !effectiveKpiDates.dateFrom && !effectiveKpiDates.dateTo) {
+      setSummaryLoading(false)
       setSummaryKpis(null)
       return
     }
     if (effectiveKpiDates.emptyIntersection) {
+      setSummaryLoading(false)
       setSummaryKpis(toPayableSummaryKpis({
         totalVendorOfferValue: 0,
         paidTillDate: 0,
@@ -470,23 +502,24 @@ export default function PaymentsPage() {
       return
     }
     let cancelled = false
+    setSummaryLoading(true)
     void (async () => {
       try {
         const summary = await payablesService.getSummary({
-          projectId: filterProjectId || undefined,
-          vendorId: filterVendorId || undefined,
           dateFrom: effectiveKpiDates.dateFrom,
           dateTo: effectiveKpiDates.dateTo,
         })
         if (!cancelled) setSummaryKpis(toPayableSummaryKpis(summary))
       } catch {
         if (!cancelled) setSummaryKpis(null)
+      } finally {
+        if (!cancelled) setSummaryLoading(false)
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [filterProjectId, filterVendorId, effectiveKpiDates, kpiCustomInvalid, kpiCustomIncomplete])
+  }, [effectiveKpiDates, kpiCustomInvalid, kpiCustomIncomplete])
 
   /** Global Date Range change restarts listing at page 0. */
   useEffect(() => {
@@ -502,18 +535,6 @@ export default function PaymentsPage() {
     void dispatch(fetchReimbursements(projectId))
     void dispatch(fetchVendorPayableControls(projectId))
   }, [dispatch, workflowDrawer?.entry.projectId, workflowDrawer?.entry.milestone.id])
-
-  const allCards = useMemo((): CardEntry[] => {
-    const out: CardEntry[] = []
-    for (const p of projects) {
-      const bl = baselinesByProject[p.id] ?? null
-      const rows = baselineVendorServiceRows(bl)
-      for (const row of rows) {
-        out.push({ projectId: p.id, projectName: p.name, row })
-      }
-    }
-    return out
-  }, [projects, baselinesByProject])
 
   const allMilestones = useMemo((): VendorMilestoneEntry[] => {
     const out: VendorMilestoneEntry[] = []
@@ -535,18 +556,13 @@ export default function PaymentsPage() {
         pageSize?: number
         colFilters?: Record<string, string>
         visibleColumns?: PayablesVisibleColumns
-        activeFilters?: Record<string, unknown>
       } = {},
     ) => {
       const nextPage = overrides.page ?? page
       const nextPageSize = overrides.pageSize ?? pageSize
       const nextCols = { ...colFilters, ...overrides.colFilters }
-      const nextActive = overrides.activeFilters ?? activeFilters
-      const toolbarFrom = String(nextActive.dateFrom ?? '')
-      const toolbarTo = String(nextActive.dateTo ?? '')
-      if (isInvalidDateRange(toolbarFrom, toolbarTo)) return
 
-      const listDates = mergeReceivableListDateParams(kpiDateBounds, toolbarFrom, toolbarTo)
+      const listDates = mergeReceivableListDateParams(kpiDateBounds, '', '')
       if (listDates.emptyIntersection) {
         setListItems([])
         setListTotal(0)
@@ -565,8 +581,8 @@ export default function PaymentsPage() {
           page: nextPage + 1,
           limit: nextPageSize,
           search: search.trim() || undefined,
-          vendorId: nextCols.vendorId || filterVendorId || undefined,
-          projectId: nextCols.projectId || filterProjectId || undefined,
+          vendorId: nextCols.vendorId || undefined,
+          projectId: nextCols.projectId || undefined,
           milestone: nextCols.milestone || undefined,
           invoiceNo: nextCols.invoiceNo || undefined,
           invoiceDate: nextCols.invoiceDate || undefined,
@@ -608,9 +624,6 @@ export default function PaymentsPage() {
       pageSize,
       search,
       colFilters,
-      activeFilters,
-      filterVendorId,
-      filterProjectId,
       statusTab,
       sortConfig.field,
       sortConfig.direction,
@@ -632,6 +645,10 @@ export default function PaymentsPage() {
   function handleColumnVisibilityChange(field: string, visible: boolean) {
     const key = field as keyof PayablesVisibleColumns
     if (!(key in visibleColumns)) return
+    if (!visible && payablesVisibleColCount(visibleColumns) <= MIN_PAYABLES_VISIBLE_COLUMNS) {
+      showToast({ title: 'Keep at least 5 columns visible', variant: 'error' })
+      return
+    }
     setVisibleColumns((prev) => ({ ...prev, [key]: visible }))
     setPage(0)
   }
@@ -736,39 +753,7 @@ export default function PaymentsPage() {
 
   useEffect(() => {
     setPage(0)
-  }, [filterProjectId, filterVendorId, search, statusTab, colFilters, sortConfig.field, sortConfig.direction])
-
-  const vendorOptions = useMemo(() => {
-    const labels: Record<string, string> = {}
-    for (const c of allCards) {
-      labels[c.row.vendorId] = c.row.vendorName
-    }
-    for (const list of Object.values(vendorPOsByProject)) {
-      for (const po of list) {
-        if (po.vendorId) labels[po.vendorId] = po.vendorName || po.vendorId
-      }
-    }
-    return Object.keys(labels).sort((a, b) => labels[a].localeCompare(labels[b]))
-  }, [allCards, vendorPOsByProject])
-
-  const vendorNameById = useMemo(() => {
-    const m: Record<string, string> = {}
-    for (const c of allCards) m[c.row.vendorId] = c.row.vendorName
-    for (const list of Object.values(vendorPOsByProject)) {
-      for (const po of list) {
-        if (po.vendorId) m[po.vendorId] = po.vendorName || po.vendorId
-      }
-    }
-    return m
-  }, [allCards, vendorPOsByProject])
-
-  const filterConfig: FilterField[] = useMemo(
-    () => [
-      { field: 'dateFrom', label: 'Date from', type: 'date' },
-      { field: 'dateTo', label: 'Date to', type: 'date' },
-    ],
-    [],
-  )
+  }, [search, statusTab, colFilters, sortConfig.field, sortConfig.direction])
 
   function openActionMenu(e: React.MouseEvent<HTMLElement>, row: PaymentTableRow) {
     e.stopPropagation()
@@ -818,6 +803,7 @@ export default function PaymentsPage() {
         setListTotal(0)
         setTabCounts({ pending: 0, completed: 0 })
         if (!kpiCustomInvalid && !(kpiCustomIncomplete && !listDates.dateFrom && !listDates.dateTo)) {
+          setSummaryLoading(false)
           setSummaryKpis(toPayableSummaryKpis({
             totalVendorOfferValue: 0,
             paidTillDate: 0,
@@ -829,10 +815,9 @@ export default function PaymentsPage() {
       const canFetchSummary =
         !kpiCustomInvalid &&
         !(kpiCustomIncomplete && !listDates.dateFrom && !listDates.dateTo)
+      if (canFetchSummary) setSummaryLoading(true)
       const summaryPromise = canFetchSummary
         ? payablesService.getSummary({
-            projectId: filterProjectId || undefined,
-            vendorId: filterVendorId || undefined,
             dateFrom: listDates.dateFrom,
             dateTo: listDates.dateTo,
           })
@@ -843,8 +828,8 @@ export default function PaymentsPage() {
           page: nextPage + 1,
           limit: pageSize,
           search: search.trim() || undefined,
-          vendorId: colFilters.vendorId || filterVendorId || undefined,
-          projectId: colFilters.projectId || filterProjectId || undefined,
+          vendorId: colFilters.vendorId || undefined,
+          projectId: colFilters.projectId || undefined,
           milestone: colFilters.milestone || undefined,
           invoiceNo: colFilters.invoiceNo || undefined,
           invoiceDate: colFilters.invoiceDate || undefined,
@@ -860,6 +845,7 @@ export default function PaymentsPage() {
         }),
       ])
       if (summary) setSummaryKpis(toPayableSummaryKpis(summary))
+      if (canFetchSummary) setSummaryLoading(false)
       setListItems(list.items)
       setListTotal(list.total)
       setTabCounts({
@@ -871,6 +857,7 @@ export default function PaymentsPage() {
         setPage(clamped)
       }
     } catch {
+      setSummaryLoading(false)
       // listing or summary may remain stale until next filter change
     }
   }
@@ -893,6 +880,7 @@ export default function PaymentsPage() {
           focus: 'payment',
           readOnly: false,
           invoiceId: menuContext.invoiceId,
+          invoiceDate: menuContext.invoiceDate,
           paymentStatus: menuContext.payableSt,
         })
         break
@@ -911,6 +899,7 @@ export default function PaymentsPage() {
           focus: 'details',
           readOnly: true,
           invoiceId: menuContext.invoiceId,
+          invoiceDate: menuContext.invoiceDate,
           paymentStatus: menuContext.payableSt,
         })
         break
@@ -977,45 +966,6 @@ export default function PaymentsPage() {
     })
   }
 
-  const toolbarAfterSearch = (
-    <Stack direction="row" alignItems="center" gap={1} flexWrap="wrap">
-      <FormControl size="small" sx={{ minWidth: { xs: 1, sm: 180 } }}>
-        <Select
-          displayEmpty
-          value={filterProjectId}
-          onChange={(e) => setFilterProjectId(String(e.target.value))}
-          sx={{ fontSize: 12, height: 32 }}
-        >
-          <MenuItem value="" sx={{ fontSize: 12 }}>
-            All Projects
-          </MenuItem>
-          {projects.map((p) => (
-            <MenuItem key={p.id} value={p.id} sx={{ fontSize: 12 }}>
-              {p.name}
-            </MenuItem>
-          ))}
-        </Select>
-      </FormControl>
-      <FormControl size="small" sx={{ minWidth: { xs: 1, sm: 180 } }}>
-        <Select
-          displayEmpty
-          value={filterVendorId}
-          onChange={(e) => setFilterVendorId(String(e.target.value))}
-          sx={{ fontSize: 12, height: 32 }}
-        >
-          <MenuItem value="" sx={{ fontSize: 12 }}>
-            All Vendors
-          </MenuItem>
-          {vendorOptions.map((vid) => (
-            <MenuItem key={vid} value={vid} sx={{ fontSize: 12 }}>
-              {vendorNameById[vid] ?? vid}
-            </MenuItem>
-          ))}
-        </Select>
-      </FormControl>
-    </Stack>
-  )
-
   const handleSearchChange = useCallback((v: string) => {
     setSearch(v)
     setPage(0)
@@ -1026,16 +976,8 @@ export default function PaymentsPage() {
     setPage(0)
   }
 
-  function handleFilterChange(next: Record<string, unknown>) {
-    setActiveFilters(next)
-    setPage(0)
-  }
-
   function handleResetAll() {
     setSearch('')
-    setActiveFilters({ dateFrom: '', dateTo: '' })
-    setFilterProjectId('')
-    setFilterVendorId('')
     setColFilters({})
     setSortConfig({ field: null, direction: 'asc' })
     setVisibleColumns(DEFAULT_PAYABLES_VISIBLE)
@@ -1054,8 +996,8 @@ export default function PaymentsPage() {
         '/finance/payables/export',
         {
           search: search.trim() || undefined,
-          vendorId: colFilters.vendorId || filterVendorId || undefined,
-          projectId: colFilters.projectId || filterProjectId || undefined,
+          vendorId: colFilters.vendorId || undefined,
+          projectId: colFilters.projectId || undefined,
           milestone: colFilters.milestone || undefined,
           invoiceNo: colFilters.invoiceNo || undefined,
           invoiceDate: colFilters.invoiceDate || undefined,
@@ -1183,7 +1125,7 @@ export default function PaymentsPage() {
                     End date must be on or after the start date.
                   </Typography>
                 ) : null}
-                <SettlementSummaryStrip kpis={summaryKpis} />
+                <SettlementSummaryStrip kpis={summaryKpis} loading={summaryLoading} />
               </Box>
             </Box>
           }
@@ -1191,18 +1133,12 @@ export default function PaymentsPage() {
           activeTab={statusTab}
           onTabChange={(v) => {
             setStatusTab(v as PayableStatusTab)
+            setColFilters({})
+            setPayableFilterOptions({})
             setPage(0)
           }}
           searchValue={search}
           onSearchChange={handleSearchChange}
-          toolbarAfterSearch={toolbarAfterSearch}
-          filterConfig={filterConfig}
-          activeFilters={activeFilters}
-          onFilterChange={handleFilterChange}
-          onFilterReset={() => {
-            setActiveFilters({ dateFrom: '', dateTo: '' })
-            setPage(0)
-          }}
           onResetAll={handleResetAll}
           columns={columnsConfig}
           onColumnVisibilityChange={handleColumnVisibilityChange}
@@ -1439,6 +1375,7 @@ export default function PaymentsPage() {
           focus={workflowDrawer?.focus}
           readOnly={workflowDrawer?.readOnly}
           invoiceId={workflowDrawer?.invoiceId}
+          invoiceDate={workflowDrawer?.invoiceDate}
           paymentStatus={workflowDrawer?.paymentStatus}
           paymentEntryMode="finance"
           onUploadInvoice={openUploadInvoiceFromWorkflow}

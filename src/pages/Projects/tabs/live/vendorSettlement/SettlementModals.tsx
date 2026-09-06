@@ -2,7 +2,7 @@ import { Divider, Stack, Typography } from '@mui/material'
 import { Modal } from '@/design-system/components'
 import type { Expense, VendorInvoice, VendorPayment } from '@/slices/live/types'
 import { formatCurrency, formatDate } from '@/utils/formatters'
-import { itemsSummary } from './utils'
+import { itemsSummary, resolveVendorInvoiceDisplayDate } from './utils'
 
 export function VendorInvoiceDetailModal({
   open,
@@ -31,7 +31,7 @@ export function VendorInvoiceDetailModal({
           Milestone: {invoice.milestoneName}
         </Typography>
         <Typography variant="body2" sx={{ fontSize: 12 }}>
-          Date: {formatDate(invoice.invoiceDate)}
+          Date: {formatDate(resolveVendorInvoiceDisplayDate(invoice))}
         </Typography>
         <Typography variant="body2" sx={{ fontSize: 12 }}>
           Invoice amount: ₹{formatCurrency(invoice.baseAmount)}

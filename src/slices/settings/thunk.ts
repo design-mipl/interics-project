@@ -65,6 +65,8 @@ type TDSFetchOpts =
 type SacFetchOpts =
   | {
       force?: boolean
+      /** Fetch every page (invoice / lookup flows). */
+      all?: boolean
       page?: number
       limit?: number
       search?: string
@@ -95,6 +97,8 @@ type CategoryFetchOpts =
 type ServiceFetchOpts =
   | {
       force?: boolean
+      /** Fetch every page (invoice / lookup flows). */
+      all?: boolean
       page?: number
       limit?: number
       search?: string
@@ -149,7 +153,7 @@ function shouldFetchFilteredList(
 
 function hasActiveQueryParams(
   params: Record<string, unknown> | undefined,
-  ignoredKeys: string[] = ['force', 'page', 'limit'],
+  ignoredKeys: string[] = ['force', 'page', 'limit', 'all'],
 ): boolean {
   if (!params) return false
 
@@ -159,6 +163,12 @@ function hasActiveQueryParams(
     if (typeof value === 'string') return value.trim().length > 0
     return true
   })
+}
+
+function shouldLoadAllPages(opts: { all?: boolean; limit?: number } | undefined): boolean {
+  if (!opts) return false
+  if (opts.all) return true
+  return typeof opts.limit === 'number' && opts.limit > 100
 }
 
 export const fetchCompanyProfile = createAsyncThunk(
@@ -295,7 +305,17 @@ export const fetchSACCodes = createAsyncThunk(
   'settings/fetchSACCodes',
   async (opts: SacFetchOpts, { rejectWithValue }) => {
     try {
-      const result = await sacCodesService.getAll(opts)
+      const result = shouldLoadAllPages(opts)
+        ? await sacCodesService.getAllPages({
+            search: opts?.search,
+            sacCode: opts?.sacCode,
+            description: opts?.description,
+            gstSlabId: opts?.gstSlabId,
+            status: opts?.status,
+            sortBy: opts?.sortBy,
+            sortOrder: opts?.sortOrder,
+          })
+        : await sacCodesService.getAll(opts)
       return { items: result.items, total: result.meta.total }
     } catch (err: unknown) {
       return rejectWithValue(rejectSettings(err, 'Failed to fetch SAC codes'))
@@ -408,10 +428,30 @@ export const fetchServices = createAsyncThunk(
       let cats = categories
       let sacs = sacCodes
       if (!cats.length) cats = (await categoriesService.getAll({ page: 1, limit: 100 })).items
-      if (!sacs.length) sacs = (await sacCodesService.getAll({ page: 1, limit: 100 })).items
-      const result = await servicesService.getAll(cats, sacs, {
-        ...opts,
-      })
+      if (!sacs.length) {
+        sacs = (
+          await (shouldLoadAllPages(opts)
+            ? sacCodesService.getAllPages()
+            : sacCodesService.getAll({ page: 1, limit: 100 }))
+        ).items
+      }
+      const listParams = {
+        search: opts?.search,
+        name: opts?.name,
+        categoryId: opts?.categoryId,
+        sacCode: opts?.sacCode,
+        gstRate: opts?.gstRate,
+        isActive: opts?.isActive,
+        sortBy: opts?.sortBy,
+        sortOrder: opts?.sortOrder,
+      }
+      const result = shouldLoadAllPages(opts)
+        ? await servicesService.getAllPages(cats, sacs, listParams)
+        : await servicesService.getAll(cats, sacs, {
+            ...listParams,
+            page: opts?.page,
+            limit: opts?.limit,
+          })
       return { items: result.items, total: result.meta.total }
     } catch (err: unknown) {
       return rejectWithValue(rejectSettings(err, 'Failed to fetch services'))

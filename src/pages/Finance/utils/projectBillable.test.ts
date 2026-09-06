@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { ClientPO } from '@/slices/baseline/reducer'
 import type { Invoice } from '@/slices/receivables/reducer'
-import { flattenClientPoMilestones, sumBilledPerBaselineService, countSelectedMilestonesWithZeroRemaining, remainingMilestoneValue } from './projectBillable'
+import {
+  flattenClientPoMilestones,
+  sumBilledPerBaselineService,
+  countSelectedMilestonesWithZeroRemaining,
+  remainingMilestoneValue,
+  resolveServiceForLine,
+  sacCodeForService,
+} from './projectBillable'
 
 const po: ClientPO = {
   id: 'po-1',
@@ -87,6 +94,52 @@ describe('sumBilledPerBaselineService', () => {
     ]
 
     expect(sumBilledPerBaselineService(invoices, 'p-1').get('svc-1')).toBe(40000)
+  })
+})
+
+describe('resolveServiceForLine', () => {
+  it('maps pitch/baseline service id to Service Master via subcategoryId', () => {
+    const baseline = {
+      id: 'b1',
+      projectId: 'p-1',
+      version: 1,
+      createdAt: '2026-01-01',
+      categories: [
+        {
+          id: 'cat-1',
+          categoryName: 'Design',
+          services: [
+            {
+              id: 'pitch-astro',
+              name: 'Astro',
+              subcategoryId: 'master-astro',
+              subcategoryName: 'Astro',
+              gstRate: 18,
+              value: 1000,
+            },
+          ],
+        },
+      ],
+    } as unknown as import('@/slices/baseline/reducer').Baseline
+
+    const services = [
+      {
+        id: 'master-astro',
+        name: 'Astro',
+        categoryId: 'cat-1',
+        sacCodeId: 'sac-1',
+        sacCode: '991932',
+        gstRate: 18,
+        allowGSTOverride: false,
+        allowVendorMapping: false,
+        tags: [],
+        status: 'active' as const,
+      },
+    ]
+
+    const resolved = resolveServiceForLine('pitch-astro', 'Astro', services, baseline)
+    expect(resolved?.id).toBe('master-astro')
+    expect(sacCodeForService([], resolved)).toBe('991932')
   })
 })
 

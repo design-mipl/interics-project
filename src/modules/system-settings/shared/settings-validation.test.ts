@@ -78,6 +78,7 @@ describe('TaxConfigSection GST rate field', () => {
     expect(source).toContain('sanitizeGstRateInput')
     expect(source).toContain('requiredGstRateInput')
     expect(source).toContain('This GST rate value already exists')
+    expect(source).toContain('Status-only / unchanged rate while editing')
   })
 
   it('loads existing saved GST values into gstRateInput on edit', () => {

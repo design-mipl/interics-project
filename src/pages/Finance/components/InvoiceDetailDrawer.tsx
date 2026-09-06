@@ -17,6 +17,7 @@ import { DrawerForm, FormSection } from '@/components/templates'
 import { StatusBadge, Button, useToast } from '@/design-system/components'
 import { useAppDispatch, useAppSelector } from '@/store/hooks'
 import { fetchInvoiceById } from '@/slices/receivables/thunk'
+import { fetchSACCodes, fetchServices } from '@/slices/settings/thunk'
 import type { Invoice } from '@/slices/receivables/reducer'
 import { InvoiceLineItems } from './InvoiceLineItems'
 import { tokens } from '@/design-system/tokens'
@@ -57,7 +58,12 @@ export function InvoiceDetailDrawer({
   const { services, sacCodes } = useAppSelector((s) => s.settings)
 
   useEffect(() => {
-    if (open && invoiceId) {
+    if (!open) return
+    void (async () => {
+      await dispatch(fetchSACCodes({ force: true, all: true }))
+      await dispatch(fetchServices({ force: true, all: true }))
+    })()
+    if (invoiceId) {
       dispatch(fetchInvoiceById(invoiceId)).catch(() => {
         showToast({ title: 'Failed to load invoice', variant: 'error' })
       })

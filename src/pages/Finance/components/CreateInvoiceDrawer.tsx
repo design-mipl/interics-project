@@ -33,6 +33,8 @@ import {
   flattenClientPoMilestones,
   milestoneBillStatus,
   remainingMilestoneValue,
+  resolveServiceForLine,
+  sacCodeForService,
   sumBilledPerMilestone,
 } from '@/pages/Finance/utils/projectBillable'
 import { buildAutoDraftLines } from '@/pages/Finance/utils/financeReceivableDraftLines'
@@ -254,8 +256,11 @@ export function CreateInvoiceDrawer({
 
   useEffect(() => {
     if (!open) return
-    dispatch(fetchServices({ limit: 1000, force: true }))
-    dispatch(fetchSACCodes())
+    void (async () => {
+      // Load SAC list first so Service Master rows can resolve sacCodeId; services carry sacCode string either way.
+      await dispatch(fetchSACCodes({ force: true, all: true }))
+      await dispatch(fetchServices({ force: true, all: true }))
+    })()
   }, [open, dispatch])
 
   useEffect(() => {
@@ -500,11 +505,22 @@ export function CreateInvoiceDrawer({
   function buildPayload(sendNow: boolean): Record<string, unknown> {
     const payloadLines = lines.map((l, idx) => {
       const taxed = computeLineItemTaxBreakdown(l.amount, l.labourCessRate ?? 0, l.gstRate)
+      const serviceLabel = l.serviceName.includes(' — ')
+        ? l.serviceName.split(' — ').slice(-1)[0]?.trim()
+        : l.serviceName
+      const settingsSvc =
+        resolveServiceForLine(l.serviceId, serviceLabel, services, baseline) ??
+        resolveServiceForLine(l.baselineServiceId, serviceLabel, services, baseline)
+      const storedSac = l.sacCode?.trim()
+      const sacCode =
+        storedSac && storedSac !== '—'
+          ? storedSac
+          : sacCodeForService(sacCodes, settingsSvc)
       return {
         id: l.id.startsWith('tmp-') ? `li-new-${idx}` : l.id,
-        serviceId: l.serviceId,
+        serviceId: settingsSvc?.id ?? l.serviceId,
         serviceName: l.serviceName,
-        sacCode: l.sacCode,
+        sacCode,
         amount: l.amount,
         labourCessRate: l.labourCessRate ?? 0,
         labourCessAmount: taxed.labourCessAmount,
@@ -805,6 +821,7 @@ export function CreateInvoiceDrawer({
             lines={lines}
             services={services}
             sacCodes={sacCodes}
+            baseline={baseline}
             onChange={setLines}
             error={lineError}
             projectSourced={!!project && (!!selectedPo || !!baseline)}

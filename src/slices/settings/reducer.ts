@@ -82,7 +82,10 @@ export interface Service {
   id: string
   name: string
   categoryId: string
+  /** Settings SAC master id when resolved from the SAC codes list. */
   sacCodeId: string | null
+  /** Raw SAC code string from Service Master (always available from API). */
+  sacCode?: string
   gstRate: number
   allowGSTOverride: boolean
   allowVendorMapping: boolean

@@ -44,7 +44,7 @@ import {
   setPage,
   setPageSize,
 } from '@/slices/receivables/reducer'
-import { convertDraftToTax, deleteInvoice, fetchInvoices, sendInvoice } from '@/slices/receivables/thunk'
+import { convertDraftToTax, deleteInvoice, fetchInvoiceById, fetchInvoices, sendInvoice } from '@/slices/receivables/thunk'
 import { fetchCustomers } from '@/slices/customers/thunk'
 import type { Invoice } from '@/slices/receivables/reducer'
 import { formatInr } from '@/utils/formatters'
@@ -66,6 +66,7 @@ import { downloadCsv } from '@/api/downloadCsv'
 import { invoiceStatusToBadgeType, mapInvoiceStatus, showPartialPaidAlongsideTabStatus } from './invoiceStatus'
 import { financeReceivableNetAmount, financeReceivableOutstanding } from './utils/financeReceivableListingAmounts'
 import { usePermission } from '@/hooks/usePermission'
+import { downloadClientInvoiceDocument } from '@/pages/Projects/tabs/live/downloadClientInvoice'
 
 const KPI_PERIOD_OPTIONS: { label: string; value: ReceivableKpiPeriod }[] = [
   { label: 'Today', value: 'Today' },
@@ -360,19 +361,36 @@ export default function BillingsPage() {
   const { items: rawItems, loading, filters, sortConfig, pagination, saving, error: listError } =
     useAppSelector((s) => s.receivables)
 
-  async function downloadInvoiceDocument(invoiceId: string, invoiceNo?: string) {
+  async function downloadInvoiceDocument(inv: Invoice) {
     try {
-      const heading = filters.statusTab === 'tax' ? 'tax' : 'draft'
-      const res = await financeApi.downloadInvoiceDocument(invoiceId, { heading })
-      const blob = res.data as Blob
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      const fallback = heading === 'tax' ? 'Tax_Invoice' : 'Draft_Invoice'
-      a.download = `${(invoiceNo || fallback).replace(/[^\w.\-]+/g, '_')}.xlsx`
-      a.click()
-      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
-      showToast({ title: 'Invoice downloaded', variant: 'success' })
+      let invoice = inv
+      if (!invoice.lineItems?.length) {
+        const loaded = await dispatch(fetchInvoiceById(invoice.id)).unwrap()
+        invoice = {
+          ...loaded,
+          status: mapInvoiceStatus(loaded) as Invoice['status'],
+          showPartialPaid: showPartialPaidAlongsideTabStatus(loaded),
+        }
+      }
+      downloadClientInvoiceDocument({
+        invoiceNumber: invoice.invoiceNo,
+        invoiceDate: invoice.invoiceDate,
+        dueDate: invoice.dueDate,
+        projectName: invoice.projectName,
+        clientName: invoice.clientName,
+        notes: invoice.notes,
+        milestoneName: invoice.milestoneName,
+        serviceName: invoice.serviceName,
+        lineItems: (invoice.lineItems ?? []).map((l) => ({
+          serviceName: l.serviceName,
+          amount: l.amount,
+          labourCessRate: l.labourCessRate,
+          gstRate: l.gstRate,
+          labourCessAmount: l.labourCessAmount,
+          taxableAmount: l.taxableAmount,
+          gstAmount: l.gstAmount,
+        })),
+      })
     } catch {
       showToast({ title: 'Failed to download invoice', variant: 'error' })
     }
@@ -431,6 +449,7 @@ export default function BillingsPage() {
     taxInvoiceRaised: 0,
     draftInvoiceSent: 0,
   })
+  const [kpiLoading, setKpiLoading] = useState(true)
   const kpiDateBounds = useMemo(
     () => resolveReceivableKpiDateRange(kpiPeriod, kpiCustomFrom, kpiCustomTo),
     [kpiPeriod, kpiCustomFrom, kpiCustomTo],
@@ -514,6 +533,8 @@ export default function BillingsPage() {
     clientId?: string
     projectId?: string
     visibleColumns?: ReceivablesVisibleColumns
+    /** When true, list by newest created (ignore current column sort). */
+    newestFirst?: boolean
   } = {}) {
     if (isInvalidDateRange(filters.dateFrom, filters.dateTo)) return
     const nextCols = { ...columnFilters, ...overrides.columnFilters }
@@ -534,6 +555,7 @@ export default function BillingsPage() {
       dispatch(clearListResults())
       return
     }
+    const newestFirst = Boolean(overrides.newestFirst)
     dispatch(
       fetchInvoices({
         page: nextPage,
@@ -555,15 +577,19 @@ export default function BillingsPage() {
         received: toExactNumber(nextCols.received),
         netReceivable: toExactNumber(nextCols.netReceivable),
         columns: buildReceivablesListColumns(visibility),
-        sortBy: sortConfig.field || undefined,
-        sortOrder: sortConfig.field ? sortConfig.direction : undefined,
+        sortBy: newestFirst ? undefined : sortConfig.field || undefined,
+        sortOrder: newestFirst ? undefined : sortConfig.field ? sortConfig.direction : undefined,
       }),
     )
   }
 
   function refreshKpis() {
-    if (!kpiQueryParams) return
+    if (!kpiQueryParams) {
+      setKpiLoading(false)
+      return
+    }
     if ('emptyIntersection' in kpiQueryParams) {
+      setKpiLoading(false)
       setKpis({
         totalPoValue: 0,
         receivedTillDate: 0,
@@ -573,6 +599,7 @@ export default function BillingsPage() {
       })
       return
     }
+    setKpiLoading(true)
     void financeApi
       .getReceivablesSummary(kpiQueryParams)
       .then((res) => {
@@ -580,10 +607,17 @@ export default function BillingsPage() {
         if (data) setKpis(data)
       })
       .catch(() => undefined)
+      .finally(() => setKpiLoading(false))
   }
 
-  function reloadAfterMutation() {
-    reload()
+  function reloadAfterMutation(options?: { showNewestFirst?: boolean }) {
+    if (options?.showNewestFirst) {
+      dispatch(setSortConfig({ field: null, direction: 'desc' }))
+      dispatch(setPage(1))
+      reload({ page: 1, newestFirst: true })
+    } else {
+      reload()
+    }
     refreshKpis()
   }
 
@@ -676,8 +710,12 @@ export default function BillingsPage() {
   }, [kpiDateBounds, dispatch])
 
   useEffect(() => {
-    if (!kpiQueryParams) return
+    if (!kpiQueryParams) {
+      setKpiLoading(false)
+      return
+    }
     if ('emptyIntersection' in kpiQueryParams) {
+      setKpiLoading(false)
       setKpis({
         totalPoValue: 0,
         receivedTillDate: 0,
@@ -688,6 +726,7 @@ export default function BillingsPage() {
       return
     }
     let cancelled = false
+    setKpiLoading(true)
     void financeApi
       .getReceivablesSummary(kpiQueryParams)
       .then((res) => {
@@ -695,6 +734,9 @@ export default function BillingsPage() {
         if (!cancelled && data) setKpis(data)
       })
       .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setKpiLoading(false)
+      })
     return () => {
       cancelled = true
     }
@@ -859,6 +901,7 @@ export default function BillingsPage() {
               value={card.value}
               variant={card.variant}
               icon={card.icon}
+              loading={kpiLoading}
             />
           ))}
         </Box>
@@ -1040,6 +1083,15 @@ export default function BillingsPage() {
   const detailOpen = Boolean(detailId)
 
   async function handleExport() {
+    const listDates = mergeReceivableListDateParams(
+      kpiDateBounds,
+      filters.dateFrom,
+      filters.dateTo,
+    )
+    if (listDates.emptyIntersection) {
+      showToast({ title: 'No invoices to export for the selected dates', variant: 'error' })
+      return
+    }
     try {
       await downloadCsv(
         '/invoices/export',
@@ -1048,6 +1100,8 @@ export default function BillingsPage() {
           search: filters.search || undefined,
           clientId: columnFilters.clientId || filters.clientId || undefined,
           projectId: columnFilters.projectId || filters.projectId || undefined,
+          dateFrom: listDates.dateFrom,
+          dateTo: listDates.dateTo,
           invoiceNo: columnFilters.invoiceNo || undefined,
           invoiceDate: columnFilters.invoiceDate || undefined,
           dueDate: columnFilters.dueDate || undefined,
@@ -1057,7 +1111,7 @@ export default function BillingsPage() {
           received: toExactNumber(columnFilters.received),
           netReceivable: toExactNumber(columnFilters.netReceivable),
           sortBy: sortConfig.field || undefined,
-          sortOrder: sortConfig.direction || undefined,
+          sortOrder: sortConfig.field ? sortConfig.direction : undefined,
         },
         `invoices-${new Date().toISOString().slice(0, 10)}.csv`,
       )
@@ -1416,7 +1470,7 @@ export default function BillingsPage() {
                                 onPay={() => setPaymentInv(inv)}
                                 onSend={() => setSendTarget(inv)}
                                 onConvertTax={() => setConvertTaxTarget(inv)}
-                                onPdf={() => void downloadInvoiceDocument(inv.id, inv.invoiceNo)}
+                                onPdf={() => void downloadInvoiceDocument(inv)}
                                 onDelete={() => setDeleteTarget(inv)}
                               />
                             )}
@@ -1518,7 +1572,7 @@ export default function BillingsPage() {
         preset={generatePreset}
         onSaved={() => {
           setGeneratePreset(null)
-          reloadAfterMutation()
+          reloadAfterMutation({ showNewestFirst: true })
         }}
       />
       <CreateInvoiceDrawer
@@ -1548,7 +1602,7 @@ export default function BillingsPage() {
         onRecordPayment={canEditReceivable ? (inv) => setPaymentInv(inv) : undefined}
         onConvertTax={canEditReceivable ? (inv) => setConvertTaxTarget(inv) : undefined}
         onDownloadPdf={(inv) => {
-          void downloadInvoiceDocument(inv.id, inv.invoiceNo)
+          void downloadInvoiceDocument(inv)
         }}
       />
 

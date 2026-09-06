@@ -720,7 +720,7 @@ export default function BillingTab({ projectId, projectName, clientId, clientNam
   const canCreateInvoice = usePermission('projectLive', 'create')
 
   useEffect(() => {
-    dispatch(fetchServices({ limit: 1000, force: true }))
+    dispatch(fetchServices({ force: true, all: true }))
     dispatch(fetchSACCodes())
     void dispatch(fetchClientPO(projectId))
     void dispatch(fetchBaseline(projectId))

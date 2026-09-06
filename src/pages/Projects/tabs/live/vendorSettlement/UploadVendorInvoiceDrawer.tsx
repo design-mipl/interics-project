@@ -145,7 +145,7 @@ export function UploadVendorInvoiceDrawer({
   const [posLoading, setPosLoading] = useState(false)
   const [selectedMilestoneIds, setSelectedMilestoneIds] = useState<string[]>([])
   const [invoiceNumber, setInvoiceNumber] = useState('')
-  const [invoiceDate, setInvoiceDate] = useState('')
+  const [invoiceDate, setInvoiceDate] = useState(() => isoFromDate(new Date()))
   const [gstRate, setGstRate] = useState<number | null>(null)
   const [tdsRate, setTdsRate] = useState(DEFAULT_TDS_PERCENT)
   const [documentUrl, setDocumentUrl] = useState<string | undefined>(undefined)
@@ -298,7 +298,7 @@ export function UploadVendorInvoiceDrawer({
     setBillablePos([])
     setSelectedMilestoneIds([])
     setInvoiceNumber('')
-    setInvoiceDate('')
+    setInvoiceDate(isoFromDate(new Date()))
     setGstRate(null)
     setTdsRate(DEFAULT_TDS_PERCENT)
     setDocumentUrl(undefined)
@@ -472,6 +472,7 @@ export function UploadVendorInvoiceDrawer({
       }
     }
     if (!invoiceNumber.trim()) next.invoiceNumber = 'Invoice number is required'
+    if (!invoiceDate.trim()) next.invoiceDate = 'Invoice date is required'
     if (gstRate == null || !isActiveGstRate(gstRate, gstRateOptions)) {
       next.gstRate = 'Select a valid GST rate'
     }
@@ -740,7 +741,7 @@ export function UploadVendorInvoiceDrawer({
             </FormField>
             <Stack direction={{ xs: 'column', sm: 'row' }} gap={2}>
               <Box sx={{ flex: 1, minWidth: 0 }}>
-                <FormField label="Invoice Date" error={errors.invoiceDate}>
+                <FormField label="Invoice Date" required error={errors.invoiceDate}>
                   <DatePicker
                     value={dateFromIso(invoiceDate)}
                     onChange={(d) => {

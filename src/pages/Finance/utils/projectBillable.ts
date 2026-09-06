@@ -40,16 +40,52 @@ export function resolveServiceForBaseline(
   )
 }
 
+/** Resolve pitch/baseline row → Service Master (via subcategoryId or label). */
+function resolveServiceViaBaseline(
+  serviceId: string,
+  baseline: Baseline | null | undefined,
+  services: Service[],
+): Service | undefined {
+  if (!baseline || !serviceId.trim()) return undefined
+  for (const cat of baseline.categories ?? []) {
+    for (const svc of cat.services ?? []) {
+      if (svc.id !== serviceId && svc.subcategoryId !== serviceId) continue
+      if (svc.subcategoryId?.trim()) {
+        const master = services.find((s) => s.id === svc.subcategoryId)
+        if (master) return master
+      }
+      const label = (svc.subcategoryName ?? svc.name ?? svc.customName ?? '').trim()
+      if (label) {
+        const byLabel = resolveServiceForBaseline(label, services)
+        if (byLabel) return byLabel
+      }
+    }
+  }
+  return undefined
+}
+
+/**
+ * Map a billable line's service id/name to Settings Service Master.
+ * Client PO milestones may store master ids or pitch/baseline ids — same as GST resolution.
+ */
 export function resolveServiceForLine(
   serviceId: string | undefined,
   serviceName: string | undefined,
   services: Service[],
+  baseline?: Baseline | null,
 ): Service | undefined {
   if (serviceId) {
     const byId = services.find((s) => s.id === serviceId)
     if (byId) return byId
   }
-  if (serviceName?.trim()) return resolveServiceForBaseline(serviceName, services)
+  if (serviceName?.trim()) {
+    const byName = resolveServiceForBaseline(serviceName, services)
+    if (byName) return byName
+  }
+  if (serviceId) {
+    const viaBaseline = resolveServiceViaBaseline(serviceId, baseline, services)
+    if (viaBaseline) return viaBaseline
+  }
   return undefined
 }
 
@@ -199,6 +235,9 @@ export function remainingServiceValue(billed: number, adjustedValue: number): nu
 }
 
 export function sacCodeForService(sacCodes: SACCode[], service: Service | undefined): string {
-  if (!service?.sacCodeId) return ''
-  return sacCodes.find((s) => s.id === service.sacCodeId)?.code ?? ''
+  if (!service) return ''
+  const direct = service.sacCode?.trim()
+  if (direct) return direct
+  if (!service.sacCodeId) return ''
+  return sacCodes.find((s) => s.id === service.sacCodeId)?.code?.trim() ?? ''
 }

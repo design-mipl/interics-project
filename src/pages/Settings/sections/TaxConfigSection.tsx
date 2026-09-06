@@ -84,12 +84,20 @@ function isDuplicateGstRate(
   editingId?: string,
   editingRate?: number,
 ): boolean {
-  if (rates.some((row) => row.rate === rate && row.id !== editingId)) return true
-  const inFilters = filterRates.some((opt) => Number(opt.value) === rate)
-  if (!inFilters) return false
-  // Editing the same rate on the same row is allowed
-  if (editingId && editingRate === rate) return false
-  return true
+  if (!Number.isFinite(rate)) return false
+  const nextRate = Number(rate)
+  const originalRate =
+    editingRate !== undefined && editingRate !== null && Number.isFinite(Number(editingRate))
+      ? Number(editingRate)
+      : undefined
+
+  // Status-only / unchanged rate while editing this row — never treat as a duplicate of itself.
+  if (editingId && originalRate !== undefined && originalRate === nextRate) return false
+
+  if (rates.some((row) => row.id !== editingId && Number(row.rate) === nextRate)) return true
+
+  // Filter options cover rates on other pages (create, or edit changing to another slab's rate).
+  return filterRates.some((opt) => Number(opt.value) === nextRate)
 }
 
 type ToggleTarget =
@@ -302,7 +310,16 @@ export default function TaxConfigSection() {
       rate,
     }
     const action = editingGST
-      ? dispatch(updateGSTRate({ id: editingGST.id, ...payload }))
+      ? dispatch(
+          updateGSTRate({
+            id: editingGST.id,
+            slabName: payload.slabName,
+            description: payload.description,
+            status: payload.status,
+            // Keep existing rate when unchanged so status-only edits never re-validate uniqueness.
+            rate: Number(editingGST.rate) === rate ? editingGST.rate : rate,
+          }),
+        )
       : dispatch(createGSTRate(payload))
     action.unwrap()
       .then(() => {

@@ -52,7 +52,12 @@ export function buildAutoDraftLines(
     const billed = billedM.get(m.milestoneId) ?? 0
     const remaining = remainingMilestoneValue(billed, m.value)
     if (remaining <= 0) continue
-    const settingsSvc = resolveServiceForLine(m.baselineServiceId, m.baselineServiceName, services)
+    const settingsSvc = resolveServiceForLine(
+      m.baselineServiceId,
+      m.baselineServiceName,
+      services,
+      baseline,
+    )
     const sac = sacCodeForService(sacCodes, settingsSvc)
     const gstRate = resolveClientPoMilestoneGstRate(selectedPo, m.milestoneId, {
       serviceId: m.baselineServiceId,
